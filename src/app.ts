@@ -4,7 +4,7 @@ import { requestLogger } from './middleware/logger'
 import { apiKeyAuth } from './middleware/auth'
 import { transcriptionRoutes } from './routes/transcription'
 import { feedRoutes } from './routes/feeds'
-import { oonaContactRoutes, type SenderConfig, type SenderFetch } from './routes/oonaContact'
+import { oonaContactRoutes, type MailSender, type SenderConfig, type SenderFetch, type SmtpConfig } from './routes/oonaContact'
 
 export type AppConfig = {
   apiKey: string
@@ -12,6 +12,8 @@ export type AppConfig = {
   whisperUrl?: string
   sender?: SenderConfig
   senderFetch?: SenderFetch
+  smtp?: SmtpConfig
+  mailSender?: MailSender
 }
 
 export function createApp(config: AppConfig) {
@@ -24,7 +26,7 @@ export function createApp(config: AppConfig) {
   app.get('/health', (c) => c.json({ ok: true }))
   app.get('/version', (c) => c.json({ version: config.version }))
 
-  app.route('/api/v1/oona/contact', oonaContactRoutes({ sender: config.sender, senderFetch: config.senderFetch }))
+  app.route('/api/v1/oona/contact', oonaContactRoutes({ sender: config.sender, senderFetch: config.senderFetch, smtp: config.smtp, mailSender: config.mailSender }))
 
   app.use('/api/v1/*', apiKeyAuth(config.apiKey))
   app.route('/api/v1/transcription', transcriptionRoutes({ whisperUrl: config.whisperUrl }))

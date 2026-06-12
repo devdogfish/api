@@ -69,8 +69,18 @@ CORS allows browser requests from `https://gallery.oonakokopelli.com`. The route
 Required runtime env vars:
 
 ```text
+# Newsletter signup only; keeps marketing in Sender.net
 SENDER_API_TOKEN=...
-CONTACT_RECEIVING_EMAIL=studio@oonakokopelli.com
-CONTACT_FROM_EMAIL=noreply@oonakokopelli.com # verified Sender/domain address used as From; visitor email is set as reply_to
 SENDER_GROUP_ID=...
+
+# Contact notification email; sends via Infomaniak SMTP, not Sender.net
+CONTACT_RECEIVING_EMAIL=studio@oonakokopelli.com
+CONTACT_FROM_EMAIL=website@oonakokopelli.com
+CONTACT_SMTP_HOST=mail.infomaniak.com
+CONTACT_SMTP_PORT=465
+CONTACT_SMTP_SECURE=true
+CONTACT_SMTP_USER=website@oonakokopelli.com
+CONTACT_SMTP_PASSWORD=...
 ```
+
+Contact emails are delivered with `From: Oona Kokopelli Website <CONTACT_FROM_EMAIL>` and `Reply-To` set to the visitor's submitted email. Newsletter opt-ins are still added to the configured Sender.net group.

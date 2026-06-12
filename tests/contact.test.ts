@@ -1,17 +1,25 @@
 import { describe, expect, test } from 'bun:test'
 import { createApp } from '../src/app'
-import type { SenderFetch } from '../src/routes/oonaContact'
+import type { MailSender, SenderFetch } from '../src/routes/oonaContact'
 
 const senderConfig = {
   apiToken: 'sender-token',
-  receivingEmail: 'studio@oonakokopelli.com',
-  groupId: 'group-123',
-  fromEmail: 'noreply@oonakokopelli.com'
+  groupId: 'group-123'
+}
+
+const smtpConfig = {
+  host: 'mail.infomaniak.com',
+  port: 465,
+  secure: true,
+  user: 'website@oonakokopelli.com',
+  password: 'smtp-password',
+  fromEmail: 'website@oonakokopelli.com',
+  toEmail: 'studio@oonakokopelli.com'
 }
 
 describe('Oona Kokopelli contact form proxy', () => {
   test('allows Carrd landing page origin in CORS preflight', async () => {
-    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig })
+    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, smtp: smtpConfig })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'OPTIONS',
@@ -25,17 +33,21 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://gallery.oonakokopelli.com')
   })
 
-  test('sends contact email and subscribes opted-in visitors through Sender', async () => {
-    const calls: Array<{ url: string; body: any; authorization: string | null }> = []
+  test('sends contact email through SMTP and subscribes opted-in visitors through Sender', async () => {
+    const senderCalls: Array<{ url: string; body: any; authorization: string | null }> = []
+    const smtpMessages: Array<any> = []
     const senderFetch: SenderFetch = async (url, init) => {
-      calls.push({
+      senderCalls.push({
         url: String(url),
         body: JSON.parse(String(init?.body)),
         authorization: new Headers(init?.headers).get('Authorization')
       })
       return Response.json({ success: true })
     }
-    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, senderFetch })
+    const mailSender: MailSender = async (message) => {
+      smtpMessages.push(message)
+    }
+    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, senderFetch, smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -54,19 +66,18 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true })
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://gallery.oonakokopelli.com')
-    expect(calls).toHaveLength(2)
-    expect(calls[0].url).toBe('https://api.sender.net/v2/message/send')
-    expect(calls[0].authorization).toBe('Bearer sender-token')
-    expect(calls[0].body.to.email).toBe('studio@oonakokopelli.com')
-    expect(calls[0].body.from.email).toBe('noreply@oonakokopelli.com')
-    expect(calls[0].body.from.name).toBe('Oona Kokopelli Website')
-    expect(calls[0].body.subject).toContain('Oona Kokopelli contact form')
-    expect(calls[0].body.reply_to).toBe('jane@example.com')
-    expect(calls[0].body.headers).toBeUndefined()
-    expect(calls[0].body.text).toContain('Jane Painter <jane@example.com>')
-    expect(calls[0].body.text).toContain('I love this work. Can I buy a print?')
-    expect(calls[1].url).toBe('https://api.sender.net/v2/subscribers')
-    expect(calls[1].body).toEqual({
+    expect(smtpMessages).toHaveLength(1)
+    expect(smtpMessages[0].to.email).toBe('studio@oonakokopelli.com')
+    expect(smtpMessages[0].from.email).toBe('website@oonakokopelli.com')
+    expect(smtpMessages[0].from.name).toBe('Oona Kokopelli Website')
+    expect(smtpMessages[0].replyTo).toBe('jane@example.com')
+    expect(smtpMessages[0].subject).toContain('Oona Kokopelli contact form')
+    expect(smtpMessages[0].text).toContain('Jane Painter <jane@example.com>')
+    expect(smtpMessages[0].text).toContain('I love this work. Can I buy a print?')
+    expect(senderCalls).toHaveLength(1)
+    expect(senderCalls[0].url).toBe('https://api.sender.net/v2/subscribers')
+    expect(senderCalls[0].authorization).toBe('Bearer sender-token')
+    expect(senderCalls[0].body).toEqual({
       email: 'jane@example.com',
       firstname: 'Jane Painter',
       groups: ['group-123'],
@@ -75,12 +86,16 @@ describe('Oona Kokopelli contact form proxy', () => {
   })
 
   test('does not subscribe visitors who do not opt in', async () => {
-    const calls: Array<{ url: string; body: any }> = []
+    const senderCalls: Array<{ url: string; body: any }> = []
+    const smtpMessages: Array<any> = []
     const senderFetch: SenderFetch = async (url, init) => {
-      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      senderCalls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
       return Response.json({ success: true })
     }
-    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, senderFetch })
+    const mailSender: MailSender = async (message) => {
+      smtpMessages.push(message)
+    }
+    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, senderFetch, smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -90,12 +105,12 @@ describe('Oona Kokopelli contact form proxy', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true })
-    expect(calls).toHaveLength(1)
-    expect(calls[0].url).toBe('https://api.sender.net/v2/message/send')
+    expect(smtpMessages).toHaveLength(1)
+    expect(senderCalls).toHaveLength(0)
   })
 
   test('returns a safe error for invalid payloads', async () => {
-    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig })
+    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, smtp: smtpConfig })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -107,9 +122,11 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(await res.json()).toEqual({ success: false, error: 'invalid_request' })
   })
 
-  test('returns a safe error when Sender rejects a request', async () => {
-    const senderFetch: SenderFetch = async () => Response.json({ success: false, message: 'blocked' }, { status: 422 })
-    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, senderFetch })
+  test('returns a safe error when SMTP rejects a request', async () => {
+    const mailSender: MailSender = async () => {
+      throw new Error('smtp blocked')
+    }
+    const app = createApp({ apiKey: 'secret', version: 'test-version', sender: senderConfig, smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -118,6 +135,6 @@ describe('Oona Kokopelli contact form proxy', () => {
     })
 
     expect(res.status).toBe(502)
-    expect(await res.json()).toEqual({ success: false, error: 'sender_request_failed' })
+    expect(await res.json()).toEqual({ success: false, error: 'contact_delivery_failed' })
   })
 })

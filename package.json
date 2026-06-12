@@ -15,11 +15,13 @@
     "@hono/node-server": "latest",
     "drizzle-orm": "latest",
     "hono": "latest",
+    "nodemailer": "^8.0.11",
     "postgres": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/nodemailer": "^8.0.1",
     "drizzle-kit": "latest",
     "typescript": "latest"
   }

@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import nodemailer from 'nodemailer'
 import { z } from 'zod'
 
 const senderBaseUrl = 'https://api.sender.net/v2'
@@ -7,16 +8,36 @@ const allowedOrigin = 'https://gallery.oonakokopelli.com'
 
 export type SenderConfig = {
   apiToken: string
-  receivingEmail: string
   groupId: string
+}
+
+export type SmtpConfig = {
+  host: string
+  port: number
+  secure: boolean
+  user: string
+  password: string
   fromEmail: string
+  toEmail: string
 }
 
 export type SenderFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>
+export type MailSender = (message: ContactEmailMessage) => Promise<void>
+
+type ContactEmailMessage = {
+  from: { email: string; name: string }
+  to: { email: string; name: string }
+  replyTo: string
+  subject: string
+  text: string
+  html: string
+}
 
 type OonaContactRoutesOptions = {
   sender?: SenderConfig
   senderFetch?: SenderFetch
+  smtp?: SmtpConfig
+  mailSender?: MailSender
 }
 
 const contactSchema = z.object({
@@ -61,9 +82,33 @@ async function callSender(senderFetch: SenderFetch, token: string, path: string,
   return payload
 }
 
+function createSmtpMailSender(smtp: SmtpConfig): MailSender {
+  const transporter = nodemailer.createTransport({
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    auth: {
+      user: smtp.user,
+      pass: smtp.password
+    }
+  })
+
+  return async (message) => {
+    await transporter.sendMail({
+      from: { address: message.from.email, name: message.from.name },
+      to: { address: message.to.email, name: message.to.name },
+      replyTo: message.replyTo,
+      subject: message.subject,
+      text: message.text,
+      html: message.html
+    })
+  }
+}
+
 export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
   const app = new Hono()
   const senderFetch = options.senderFetch ?? fetch
+  const mailSender = options.mailSender ?? (options.smtp ? createSmtpMailSender(options.smtp) : undefined)
 
   app.use(
     '*',
@@ -76,8 +121,8 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
   )
 
   app.post('/', async (c) => {
-    if (!options.sender?.apiToken || !options.sender.receivingEmail || !options.sender.fromEmail || !options.sender.groupId) {
-      return c.json({ success: false, error: 'missing_sender_config' }, 503)
+    if (!mailSender || !options.smtp?.fromEmail || !options.smtp.toEmail) {
+      return c.json({ success: false, error: 'missing_mail_config' }, 503)
     }
 
     let body: unknown
@@ -111,16 +156,20 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
     `
 
     try {
-      await callSender(senderFetch, options.sender.apiToken, '/message/send', {
-        from: { email: options.sender.fromEmail, name: 'Oona Kokopelli Website' },
-        to: { email: options.sender.receivingEmail, name: 'Oona Kokopelli Studio' },
+      await mailSender({
+        from: { email: options.smtp.fromEmail, name: 'Oona Kokopelli Website' },
+        to: { email: options.smtp.toEmail, name: 'Oona Kokopelli Studio' },
         subject: `Oona Kokopelli contact form: ${name}`,
         text,
         html,
-        reply_to: email
+        replyTo: email
       })
 
       if (subscribe) {
+        if (!options.sender?.apiToken || !options.sender.groupId) {
+          return c.json({ success: false, error: 'missing_sender_config' }, 503)
+        }
+
         await callSender(senderFetch, options.sender.apiToken, '/subscribers', {
           email,
           firstname: name,
@@ -129,8 +178,8 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
         })
       }
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', msg: 'sender_request_failed', error: err instanceof Error ? err.message : String(err) }))
-      return c.json({ success: false, error: 'sender_request_failed' }, 502)
+      console.error(JSON.stringify({ level: 'error', msg: 'contact_delivery_failed', error: err instanceof Error ? err.message : String(err) }))
+      return c.json({ success: false, error: 'contact_delivery_failed' }, 502)
     }
 
     return c.json({ success: true })
