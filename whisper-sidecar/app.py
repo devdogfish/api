@@ -10,7 +10,7 @@ MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
-app = FastAPI(title="misc-api whisper sidecar")
+app = FastAPI(title="girke-api whisper sidecar")
 _model: WhisperModel | None = None
 
 

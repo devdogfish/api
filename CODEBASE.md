@@ -1,6 +1,6 @@
-# Misc API
+# API
 
-Permanent miscellaneous API service for `api.girke.dev`. Separate from the LLM Wiki API.
+Permanent Girke API service for `api.girke.dev`. Separate from the LLM Wiki API.
 
 ## Endpoints
 

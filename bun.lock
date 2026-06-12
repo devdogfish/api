@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "misc-api",
+      "name": "api",
       "dependencies": {
         "@hono/node-server": "latest",
         "drizzle-orm": "latest",

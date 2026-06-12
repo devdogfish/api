@@ -17,7 +17,7 @@ export function createApp(config: AppConfig) {
   app.use('*', requestLogger())
   app.use('*', bodyLimit({ maxSize: 250 * 1024 * 1024 }))
 
-  app.get('/', (c) => c.json({ name: 'misc-api', version: config.version }))
+  app.get('/', (c) => c.json({ name: 'api', internal: 'girke-api', version: config.version }))
   app.get('/health', (c) => c.json({ ok: true }))
   app.get('/version', (c) => c.json({ version: config.version }))
 

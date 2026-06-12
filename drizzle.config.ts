@@ -5,6 +5,6 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgres://misc_api:misc_api@localhost:5432/misc_api'
+    url: process.env.DATABASE_URL ?? 'postgres://girke_api:girke_api@localhost:5432/girke_api'
   }
 })

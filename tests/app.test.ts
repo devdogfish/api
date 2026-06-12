@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createApp } from '../src/app'
 
-describe('misc API base routes', () => {
+describe('API base routes', () => {
   test('GET /health returns ok without auth', async () => {
     const app = createApp({ apiKey: 'secret', version: 'test-version' })
     const res = await app.request('/health')

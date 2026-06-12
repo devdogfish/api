@@ -1,6 +1,6 @@
 services:
-  misc-api:
-    container_name: misc-api
+  girke-api:
+    container_name: girke-api
     build: .
     env_file: .env
     depends_on:
@@ -9,13 +9,13 @@ services:
       whisper:
         condition: service_started
     networks:
-      - misc_internal
+      - girke_api_internal
       - llmwiki
     restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
-    container_name: misc-api-postgres
+    container_name: girke-api-postgres
     env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -25,11 +25,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - misc_internal
+      - girke_api_internal
     restart: unless-stopped
 
   whisper:
-    container_name: misc-api-whisper
+    container_name: girke-api-whisper
     build: ./whisper-sidecar
     environment:
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
@@ -38,15 +38,17 @@ services:
     volumes:
       - whisper_cache:/root/.cache/huggingface
     networks:
-      - misc_internal
+      - girke_api_internal
     restart: unless-stopped
 
 volumes:
   postgres_data:
+    name: girke_api_postgres_data
   whisper_cache:
+    name: girke_api_whisper_cache
 
 networks:
-  misc_internal:
+  girke_api_internal:
     driver: bridge
   llmwiki:
     external: true

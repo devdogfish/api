@@ -15,5 +15,5 @@ const app = createApp({
 })
 
 serve({ fetch: app.fetch, port, hostname: '0.0.0.0' }, (info) => {
-  console.log(JSON.stringify({ level: 'info', msg: 'misc-api listening', port: info.port }))
+  console.log(JSON.stringify({ level: 'info', msg: 'girke-api listening', port: info.port }))
 })
