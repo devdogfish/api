@@ -30,12 +30,47 @@ Database migrations are generated in `drizzle/`. Current migration was applied t
 
 ## Public routing
 
-Caddy routes `api.girke.dev` to Docker service `girke-api:3000` on the existing external Docker network `llmwiki`. No random public app port is opened.
+Caddy routes `api.girke.dev` to Docker service `girke-api:3000` on the existing external Docker network `llmwiki`. No random public app port is opened. DNS and TLS are live for `https://api.girke.dev`.
 
-DNS still needs an `A` record:
+## Oona Kokopelli contact form
+
+Public endpoint for the Carrd landing page at `https://gallery.oonakokopelli.com`:
 
 ```text
-api.girke.dev -> 140.238.145.241
+POST https://api.girke.dev/api/v1/oona/contact
+Content-Type: application/json
 ```
 
-Once DNS propagates, Caddy should issue TLS automatically.
+Request body:
+
+```json
+{
+  "name": "Jane Painter",
+  "email": "jane@example.com",
+  "message": "I love this work. Can I buy a print?",
+  "subscribe": true
+}
+```
+
+Response body:
+
+```json
+{ "success": true }
+```
+
+Errors use the same shape with a safe code:
+
+```json
+{ "success": false, "error": "invalid_request" }
+```
+
+CORS allows browser requests from `https://gallery.oonakokopelli.com`. The route is intentionally public and does not require `X-API-Key`; protected internal routes still do.
+
+Required runtime env vars:
+
+```text
+SENDER_API_TOKEN=...
+CONTACT_RECEIVING_EMAIL=studio@oonakokopelli.com
+CONTACT_FROM_EMAIL=studio@oonakokopelli.com # optional, defaults to receiving email
+SENDER_GROUP_ID=...
+```
