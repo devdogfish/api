@@ -1,0 +1,52 @@
+services:
+  misc-api:
+    container_name: misc-api
+    build: .
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      whisper:
+        condition: service_started
+    networks:
+      - misc_internal
+      - llmwiki
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: misc-api-postgres
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - misc_internal
+    restart: unless-stopped
+
+  whisper:
+    container_name: misc-api-whisper
+    build: ./whisper-sidecar
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+    volumes:
+      - whisper_cache:/root/.cache/huggingface
+    networks:
+      - misc_internal
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  whisper_cache:
+
+networks:
+  misc_internal:
+    driver: bridge
+  llmwiki:
+    external: true
