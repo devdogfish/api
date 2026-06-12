@@ -71,6 +71,6 @@ Required runtime env vars:
 ```text
 SENDER_API_TOKEN=...
 CONTACT_RECEIVING_EMAIL=studio@oonakokopelli.com
-CONTACT_FROM_EMAIL=studio@oonakokopelli.com # optional, defaults to receiving email
+CONTACT_FROM_EMAIL=noreply@oonakokopelli.com # verified Sender/domain address used as From; visitor email is set as reply_to
 SENDER_GROUP_ID=...
 ```

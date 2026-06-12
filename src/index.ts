@@ -3,13 +3,17 @@ import { createApp } from './app'
 
 const port = Number(process.env.PORT ?? '3000')
 const apiKey = process.env.API_KEY
+const senderApiToken = process.env.SENDER_API_TOKEN
+const contactReceivingEmail = process.env.CONTACT_RECEIVING_EMAIL
+const contactFromEmail = process.env.CONTACT_FROM_EMAIL
+const senderGroupId = process.env.SENDER_GROUP_ID
 const senderConfig =
-  process.env.SENDER_API_TOKEN && process.env.CONTACT_RECEIVING_EMAIL && process.env.SENDER_GROUP_ID
+  senderApiToken && contactReceivingEmail && contactFromEmail && senderGroupId
     ? {
-        apiToken: process.env.SENDER_API_TOKEN,
-        receivingEmail: process.env.CONTACT_RECEIVING_EMAIL,
-        groupId: process.env.SENDER_GROUP_ID,
-        fromEmail: process.env.CONTACT_FROM_EMAIL
+        apiToken: senderApiToken,
+        receivingEmail: contactReceivingEmail,
+        groupId: senderGroupId,
+        fromEmail: contactFromEmail
       }
     : undefined
 

@@ -6,7 +6,7 @@ const senderConfig = {
   apiToken: 'sender-token',
   receivingEmail: 'studio@oonakokopelli.com',
   groupId: 'group-123',
-  fromEmail: 'studio@oonakokopelli.com'
+  fromEmail: 'noreply@oonakokopelli.com'
 }
 
 describe('Oona Kokopelli contact form proxy', () => {
@@ -58,6 +58,8 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(calls[0].url).toBe('https://api.sender.net/v2/message/send')
     expect(calls[0].authorization).toBe('Bearer sender-token')
     expect(calls[0].body.to.email).toBe('studio@oonakokopelli.com')
+    expect(calls[0].body.from.email).toBe('noreply@oonakokopelli.com')
+    expect(calls[0].body.from.name).toBe('Oona Kokopelli Website')
     expect(calls[0].body.subject).toContain('Oona Kokopelli contact form')
     expect(calls[0].body.reply_to).toBe('jane@example.com')
     expect(calls[0].body.headers).toBeUndefined()

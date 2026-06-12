@@ -9,7 +9,7 @@ export type SenderConfig = {
   apiToken: string
   receivingEmail: string
   groupId: string
-  fromEmail?: string
+  fromEmail: string
 }
 
 export type SenderFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>
@@ -76,7 +76,7 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
   )
 
   app.post('/', async (c) => {
-    if (!options.sender?.apiToken || !options.sender.receivingEmail || !options.sender.groupId) {
+    if (!options.sender?.apiToken || !options.sender.receivingEmail || !options.sender.fromEmail || !options.sender.groupId) {
       return c.json({ success: false, error: 'missing_sender_config' }, 503)
     }
 
@@ -93,7 +93,6 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
     }
 
     const { name, email, message, subscribe } = parsed.data
-    const fromEmail = options.sender.fromEmail || options.sender.receivingEmail
     const text = [
       `New Oona Kokopelli contact form message`,
       ``,
@@ -113,7 +112,7 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
 
     try {
       await callSender(senderFetch, options.sender.apiToken, '/message/send', {
-        from: { email: fromEmail, name: 'Oona Kokopelli Studio' },
+        from: { email: options.sender.fromEmail, name: 'Oona Kokopelli Website' },
         to: { email: options.sender.receivingEmail, name: 'Oona Kokopelli Studio' },
         subject: `Oona Kokopelli contact form: ${name}`,
         text,
