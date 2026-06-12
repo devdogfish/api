@@ -54,7 +54,8 @@ async function callSender(senderFetch: SenderFetch, token: string, path: string,
   }
 
   if (!res.ok || payload?.success === false) {
-    throw new Error(`Sender request failed: ${res.status}`)
+    const message = typeof payload?.message === 'string' ? payload.message : 'unknown_sender_error'
+    throw new Error(`Sender request failed: ${res.status}: ${message}`)
   }
 
   return payload
@@ -117,10 +118,7 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
         subject: `Oona Kokopelli contact form: ${name}`,
         text,
         html,
-        headers: {
-          charset: 'utf-8',
-          'Reply-To': email
-        }
+        reply_to: email
       })
 
       if (subscribe) {

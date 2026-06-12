@@ -59,6 +59,8 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(calls[0].authorization).toBe('Bearer sender-token')
     expect(calls[0].body.to.email).toBe('studio@oonakokopelli.com')
     expect(calls[0].body.subject).toContain('Oona Kokopelli contact form')
+    expect(calls[0].body.reply_to).toBe('jane@example.com')
+    expect(calls[0].body.headers).toBeUndefined()
     expect(calls[0].body.text).toContain('Jane Painter <jane@example.com>')
     expect(calls[0].body.text).toContain('I love this work. Can I buy a print?')
     expect(calls[1].url).toBe('https://api.sender.net/v2/subscribers')
