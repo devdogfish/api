@@ -9,9 +9,13 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "tokens:create": "bun run scripts/tokens-create.ts",
+    "tokens:revoke": "bun run scripts/tokens-revoke.ts",
+    "sandcastle": "npx tsx .sandcastle/main.ts"
   },
   "dependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
     "@hono/node-server": "latest",
     "drizzle-orm": "latest",
     "hono": "latest",

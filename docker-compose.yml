@@ -3,6 +3,8 @@ services:
     container_name: girke-api
     build: .
     env_file: .env
+    volumes:
+      - transcription_uploads:/tmp/girke-transcription-uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,6 +59,8 @@ volumes:
     name: girke_api_postgres_data
   whisper_cache:
     name: girke_api_whisper_cache
+  transcription_uploads:
+    name: girke_api_transcription_uploads
 
 networks:
   girke_api_internal:

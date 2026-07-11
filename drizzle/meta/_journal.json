@@ -8,6 +8,20 @@
       "when": 1781230058004,
       "tag": "0000_oval_inertia",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783773238748,
+      "tag": "0001_vengeful_expediter",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783776000000,
+      "tag": "0002_transcription_jobs_async",
+      "breakpoints": true
     }
   ]
 }

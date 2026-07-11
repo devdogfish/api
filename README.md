@@ -13,7 +13,7 @@ Permanent service for `api.girke.dev`, separate from the LLM Wiki app/API. The o
 ## Secrets/config
 
 - Runtime env file: `/home/ubuntu/api/.env`
-- API auth: static `X-API-Key` header from `.env`
+- API auth: Girke bearer tokens in Postgres. Create/revoke with `bun run tokens:create <name>` and `bun run tokens:revoke <id>`.
 - Do not commit `.env`.
 
 ## Operations
@@ -23,10 +23,13 @@ cd /home/ubuntu/api
 export PATH="$HOME/.bun/bin:$PATH"
 bun test
 bun run typecheck
+docker compose up -d postgres
+docker compose run --build --rm girke-api bun run db:migrate
+docker compose run --build --rm girke-api bun run tokens:create <name>
 docker compose up -d --build
 ```
 
-Database migrations are generated in `drizzle/`. Current migration was applied to the Compose Postgres container.
+Database migrations are generated in `drizzle/`. Token values are printed once; only hashes are stored.
 
 ## Public routing
 
@@ -42,13 +45,17 @@ Public routes:
 - `GET /health` — health check: `{ ok: true }`.
 - `GET /version` — configured app version.
 - `OPTIONS /api/v1/oona/contact` — Carrd/browser CORS preflight.
-- `POST /api/v1/oona/contact` — public Oona Kokopelli contact form endpoint; no API key required.
+- `POST /api/v1/oona/contact` — public Oona Kokopelli contact form endpoint; no API token required.
 
-Protected routes requiring `X-API-Key`:
+Protected routes requiring `Authorization: Bearer girke_...`:
 
 - `GET /api/v1/transcription` — transcription capability metadata: levels, languages, accepted media formats.
-- `GET /api/v1/transcription/jobs` — placeholder job list, currently returns `{ jobs: [] }`.
-- `POST /api/v1/transcription/transcribe` — multipart upload transcription for supported audio/video files.
+- `POST /api/v1/transcription/transcribe` — synchronous multipart transcription for short supported audio/video files.
+- `GET /api/v1/transcription/jobs` — list transcription jobs owned by the API token.
+- `POST /api/v1/transcription/jobs` — create an async transcription job for longer media.
+- `GET /api/v1/transcription/jobs/:job_id` — read async job status/progress.
+- `GET /api/v1/transcription/jobs/:job_id/result` — read completed transcript result.
+- `DELETE /api/v1/transcription/jobs/:job_id` — cancel queued/processing async job.
 - `GET /api/v1/feeds` — placeholder feed list, currently returns `{ feeds: [] }`.
 
 Internal Docker-only sidecar routes, not public internet endpoints:
@@ -63,9 +70,20 @@ Protected capability endpoint for short/medium audio/video transcription:
 
 ```text
 POST https://api.girke.dev/api/v1/transcription/transcribe
-X-API-Key: ...
+Authorization: Bearer girke_...
 Content-Type: multipart/form-data
 ```
+
+Long media should use async jobs:
+
+```text
+POST https://api.girke.dev/api/v1/transcription/jobs
+GET https://api.girke.dev/api/v1/transcription/jobs/:job_id
+GET https://api.girke.dev/api/v1/transcription/jobs/:job_id/result
+DELETE https://api.girke.dev/api/v1/transcription/jobs/:job_id
+```
+
+Async jobs store uploaded media once, process chunks in the background, expose progress, preserve final JSON results, and clean up media by default. Optional `webhook_url=https://...` receives signed terminal payloads for completed, failed, and cancelled jobs.
 
 Multipart fields:
 
@@ -94,7 +112,7 @@ Metadata:
 
 ```text
 GET https://api.girke.dev/api/v1/transcription
-X-API-Key: ...
+Authorization: Bearer girke_...
 ```
 
 Response body:
@@ -120,9 +138,12 @@ Transcription response body:
 ```json
 {
   "text": "Transcribed text...",
-  "language": "en",
+  "segments": [{ "start": 0, "end": 2.74, "text": "Transcribed text..." }],
   "duration_seconds": 2.74,
+  "processing_seconds": 1.21,
   "level": "medium",
+  "language": "auto",
+  "detected_language": "en",
   "model": "distil-small.en"
 }
 ```
@@ -159,7 +180,7 @@ Errors use the same shape with a safe code:
 { "success": false, "error": "invalid_request" }
 ```
 
-CORS allows browser requests from `https://gallery.oonakokopelli.com`. The route is intentionally public and does not require `X-API-Key`; protected internal routes still do.
+CORS allows browser requests from `https://gallery.oonakokopelli.com`. The route is intentionally public and does not require a Girke API token; protected internal routes still do.
 
 Required runtime env vars:
 

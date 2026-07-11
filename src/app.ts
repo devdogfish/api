@@ -1,17 +1,32 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { requestLogger } from './middleware/logger'
-import { apiKeyAuth } from './middleware/auth'
+import { bearerTokenAuth, type ApiTokenStore, type AuthVariables } from './middleware/auth'
 import { transcriptionRoutes } from './routes/transcription'
-import type { TranscriptionFetch } from './routes/transcription'
+import type { TranscriptionFetch, TranscriptionJobStore, TranscriptionWebhookFetch, TranscriptionWorker } from './routes/transcription'
+import type { TranscriptionDurationProbe, TranscriptionMediaProcessor } from './transcription/mediaProcessor'
 import { feedRoutes } from './routes/feeds'
 import { oonaContactRoutes, type MailSender, type SenderConfig, type SenderFetch, type SmtpConfig } from './routes/oonaContact'
 
 export type AppConfig = {
-  apiKey: string
+  apiTokenStore: ApiTokenStore
   version: string
   whisperUrl?: string
   whisperFetch?: TranscriptionFetch
+  transcriptionJobStore?: TranscriptionJobStore
+  transcriptionWorker?: TranscriptionWorker | null
+  transcriptionMediaProcessor?: TranscriptionMediaProcessor
+  transcriptionDurationProbe?: TranscriptionDurationProbe
+  transcriptionUploadDir?: string
+  transcriptionKeepMedia?: boolean
+  transcriptionSyncMaxUploadBytes?: number
+  transcriptionSyncMaxDurationSeconds?: number
+  transcriptionAsyncMaxUploadBytes?: number
+  transcriptionAsyncMaxDurationSeconds?: number
+  transcriptionWebhookFetch?: TranscriptionWebhookFetch
+  transcriptionWebhookSecret?: string
+  transcriptionWebhookMaxAttempts?: number
+  transcriptionWebhookRetryBaseDelayMs?: number
   sender?: SenderConfig
   senderFetch?: SenderFetch
   smtp?: SmtpConfig
@@ -19,10 +34,10 @@ export type AppConfig = {
 }
 
 export function createApp(config: AppConfig) {
-  const app = new Hono()
+  const app = new Hono<{ Variables: AuthVariables }>()
 
   app.use('*', requestLogger())
-  app.use('*', bodyLimit({ maxSize: 250 * 1024 * 1024 }))
+  app.use('*', bodyLimit({ maxSize: 2 * 1024 * 1024 * 1024 }))
 
   app.get('/', (c) => c.json({ name: 'api', internal: 'girke-api', version: config.version }))
   app.get('/health', (c) => c.json({ ok: true }))
@@ -30,8 +45,28 @@ export function createApp(config: AppConfig) {
 
   app.route('/api/v1/oona/contact', oonaContactRoutes({ sender: config.sender, senderFetch: config.senderFetch, smtp: config.smtp, mailSender: config.mailSender }))
 
-  app.use('/api/v1/*', apiKeyAuth(config.apiKey))
-  app.route('/api/v1/transcription', transcriptionRoutes({ whisperUrl: config.whisperUrl, whisperFetch: config.whisperFetch }))
+  app.use('/api/v1/*', bearerTokenAuth(config.apiTokenStore))
+  app.route(
+    '/api/v1/transcription',
+    transcriptionRoutes({
+      whisperUrl: config.whisperUrl,
+      whisperFetch: config.whisperFetch,
+      jobStore: config.transcriptionJobStore,
+      worker: config.transcriptionWorker,
+      mediaProcessor: config.transcriptionMediaProcessor,
+      durationProbe: config.transcriptionDurationProbe,
+      webhookFetch: config.transcriptionWebhookFetch,
+      webhookSecret: config.transcriptionWebhookSecret,
+      webhookMaxAttempts: config.transcriptionWebhookMaxAttempts,
+      webhookRetryBaseDelayMs: config.transcriptionWebhookRetryBaseDelayMs,
+      uploadDir: config.transcriptionUploadDir,
+      keepMedia: config.transcriptionKeepMedia,
+      syncMaxUploadBytes: config.transcriptionSyncMaxUploadBytes,
+      syncMaxDurationSeconds: config.transcriptionSyncMaxDurationSeconds,
+      asyncMaxUploadBytes: config.transcriptionAsyncMaxUploadBytes,
+      asyncMaxDurationSeconds: config.transcriptionAsyncMaxDurationSeconds
+    })
+  )
   app.route('/api/v1/feeds', feedRoutes())
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404))

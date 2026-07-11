@@ -2,6 +2,7 @@ import os
 import tempfile
 import threading
 import time
+import gc
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -56,6 +57,7 @@ def resolve_model(level: str, language: str | None) -> str:
 def get_model(model_name: str) -> WhisperModel:
     with _model_lock:
         if model_name not in _models:
+            unload_models_except(model_name)
             _models[model_name] = WhisperModel(
                 model_name,
                 device=DEVICE,
@@ -64,6 +66,24 @@ def get_model(model_name: str) -> WhisperModel:
                 num_workers=NUM_WORKERS,
             )
         return _models[model_name]
+
+
+def unload_models_except(model_name: str) -> None:
+    for loaded_name, model in list(_models.items()):
+        if loaded_name == model_name:
+            continue
+
+        close = getattr(model, "close", None)
+        if callable(close):
+            close()
+        else:
+            inner_model = getattr(model, "model", None)
+            unload = getattr(inner_model, "unload_model", None)
+            if callable(unload):
+                unload()
+
+        del _models[loaded_name]
+    gc.collect()
 
 
 @app.get("/health")
@@ -112,6 +132,8 @@ async def transcribe(
         normalized_language = "en"
     elif normalized_language in {"german", "deutsch"}:
         normalized_language = "de"
+    elif normalized_language == "auto":
+        normalized_language = None
     if normalized_language not in LANGUAGES and normalized_language is not None:
         raise HTTPException(status_code=400, detail="invalid_language")
 
@@ -131,12 +153,24 @@ async def transcribe(
             beam_size=int(os.getenv(f"WHISPER_BEAM_{normalized_level.upper()}", "1")),
             condition_on_previous_text=False,
         )
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+        segment_list = list(segments)
+        response_segments = [
+            {
+                "start": round(segment.start, 3),
+                "end": round(segment.end, 3),
+                "text": segment.text.strip(),
+            }
+            for segment in segment_list
+        ]
+        text = " ".join(segment["text"] for segment in response_segments).strip()
         return {
             "text": text,
-            "language": info.language,
-            "duration_seconds": round(time.time() - started, 3),
+            "segments": response_segments,
+            "duration_seconds": round(info.duration, 3),
+            "processing_seconds": round(time.time() - started, 3),
             "level": normalized_level,
+            "language": normalized_language or "auto",
+            "detected_language": info.language,
             "model": model_name,
         }
     except ValueError as exc:
