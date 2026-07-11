@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from 'hono'
+import { UNAUTHORIZED_ERROR_BODY } from '../openapi'
 
 export type ApiTokenPrincipal = {
   id: number
@@ -23,12 +24,12 @@ export function bearerTokenAuth(tokenStore: ApiTokenStore): MiddlewareHandler<{ 
   return async (c, next) => {
     const presented = parseBearerToken(c.req.header('Authorization'))
     if (!presented) {
-      return c.json({ error: 'unauthorized' }, 401)
+      return c.json(UNAUTHORIZED_ERROR_BODY, 401)
     }
 
     const apiToken = await tokenStore.findActiveByToken(presented)
     if (!apiToken) {
-      return c.json({ error: 'unauthorized' }, 401)
+      return c.json(UNAUTHORIZED_ERROR_BODY, 401)
     }
 
     c.set('apiToken', apiToken)

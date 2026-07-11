@@ -22,23 +22,35 @@ export const FEEDS_TAG = {
   description: 'Protected feed capability routes.'
 } as const
 export const PROTECTED_BEARER_SECURITY = [{ [BEARER_SECURITY_SCHEME]: [] as string[] }]
-export const UNAUTHORIZED_ERROR_EXAMPLE = { error: 'unauthorized' } as const
+export const UNAUTHORIZED_ERROR_BODY = { error: 'unauthorized' } as const
+
+export function createJsonContent<TSchema extends z.ZodTypeAny>(schema: TSchema, example: unknown) {
+  return {
+    'application/json': {
+      schema,
+      example
+    }
+  }
+}
+
+export function createJsonResponse<TSchema extends z.ZodTypeAny>(description: string, schema: TSchema, example: unknown) {
+  return {
+    description,
+    content: createJsonContent(schema, example)
+  }
+}
 
 export const unauthorizedErrorSchema = z
   .object({
-    error: z.literal('unauthorized').openapi({ example: UNAUTHORIZED_ERROR_EXAMPLE.error })
+    error: z.literal('unauthorized').openapi({ example: UNAUTHORIZED_ERROR_BODY.error })
   })
   .openapi('UnauthorizedErrorResponse')
 
-export const unauthorizedErrorResponse = {
-  description: 'Missing or invalid Girke API bearer token.',
-  content: {
-    'application/json': {
-      schema: unauthorizedErrorSchema,
-      example: UNAUTHORIZED_ERROR_EXAMPLE
-    }
-  }
-} as const
+export const unauthorizedErrorResponse = createJsonResponse(
+  'Missing or invalid Girke API bearer token.',
+  unauthorizedErrorSchema,
+  UNAUTHORIZED_ERROR_BODY
+)
 
 export function createOpenApiDocumentConfig(version: string) {
   return {
