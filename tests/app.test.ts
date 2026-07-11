@@ -24,18 +24,73 @@ const expectedOpenApiPaths = [
   '/reference',
   '/version'
 ]
+type OpenApiMethod = 'get' | 'post' | 'delete'
+type OpenApiSecurity = Array<Record<string, string[]>>
+type OpenApiSchema = {
+  $ref?: string
+  type?: string
+  format?: string
+  description?: string
+  example?: unknown
+  enum?: string[]
+  required: string[]
+  properties: Record<string, OpenApiSchema>
+  items: OpenApiSchema
+  minLength?: number
+  maxLength?: number
+}
+type OpenApiMediaType = {
+  schema: OpenApiSchema
+  example?: unknown
+}
+type OpenApiResponse = {
+  description?: string
+  content: Record<string, OpenApiMediaType>
+}
+type OpenApiRequestBody = {
+  required?: boolean
+  description?: string
+  content: Record<string, OpenApiMediaType>
+}
+type OpenApiOperation = {
+  operationId?: string
+  tags?: string[]
+  security?: OpenApiSecurity
+  description?: string
+  parameters?: Array<Record<string, unknown>>
+  requestBody?: OpenApiRequestBody
+  responses: Record<string, OpenApiResponse>
+}
+type OpenApiDocument = {
+  openapi: string
+  info: {
+    title: string
+    version: string
+    description: string
+  }
+  tags: unknown[]
+  paths: Record<string, Partial<Record<OpenApiMethod, OpenApiOperation>>>
+  webhooks: Record<string, { post: OpenApiOperation }>
+  components: {
+    securitySchemes: Record<string, unknown>
+    schemas: Record<string, OpenApiSchema>
+  }
+}
+
+const expectedBearerSecurity: OpenApiSecurity = [{ bearerAuth: [] }]
+
 type ExpectedOpenApiOperation = {
   path: string
-  method: 'get' | 'post' | 'delete'
+  method: OpenApiMethod
   operationId: string
   tag: string
-  security?: Array<Record<string, string[]>>
+  security?: OpenApiSecurity
   requestContentTypes?: string[]
   responseStatusCodes: string[]
   responseContentTypes: string[]
 }
 
-const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
+const expectedOpenApiOperations = [
   {
     path: '/',
     method: 'get',
@@ -90,7 +145,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'get',
     operationId: 'listFeeds',
     tag: 'Feeds',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401'],
     responseContentTypes: ['application/json']
   },
@@ -99,7 +154,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'get',
     operationId: 'getTranscriptionMetadata',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401'],
     responseContentTypes: ['application/json']
   },
@@ -108,7 +163,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'post',
     operationId: 'transcribeSynchronously',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     requestContentTypes: ['multipart/form-data'],
     responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502'],
     responseContentTypes: ['application/json']
@@ -118,7 +173,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'get',
     operationId: 'listTranscriptionJobs',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401'],
     responseContentTypes: ['application/json']
   },
@@ -127,7 +182,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'post',
     operationId: 'createTranscriptionJob',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     requestContentTypes: ['multipart/form-data'],
     responseStatusCodes: ['202', '400', '401', '413', '415', '422', '500'],
     responseContentTypes: ['application/json']
@@ -137,7 +192,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'get',
     operationId: 'getTranscriptionJob',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401', '404'],
     responseContentTypes: ['application/json']
   },
@@ -146,7 +201,7 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'get',
     operationId: 'getTranscriptionJobResult',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401', '404', '409', '410', '422', '500'],
     responseContentTypes: ['application/json']
   },
@@ -155,22 +210,90 @@ const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
     method: 'delete',
     operationId: 'cancelTranscriptionJob',
     tag: 'Transcription',
-    security: [{ bearerAuth: [] }],
+    security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401', '404', '409'],
     responseContentTypes: ['application/json']
   }
-] as const
+] satisfies ReadonlyArray<ExpectedOpenApiOperation>
 
-function expectOpenApiOperation(body: any, expected: ExpectedOpenApiOperation) {
-  const operation = body.paths[expected.path]?.[expected.method]
-  expect(operation).toBeDefined()
+type ExpectedWebhookPayloadSchema = {
+  schemaName: string
+  jobSchemaName: string
+}
+
+const expectedWebhookPayloadSchemas = [
+  {
+    schemaName: 'TranscriptionJobCompletedWebhookPayload',
+    jobSchemaName: 'TranscriptionJobCompletedStatusResponse'
+  },
+  {
+    schemaName: 'TranscriptionJobFailedWebhookPayload',
+    jobSchemaName: 'TranscriptionJobFailedStatusResponse'
+  },
+  {
+    schemaName: 'TranscriptionJobCancelledWebhookPayload',
+    jobSchemaName: 'TranscriptionJobCancelledStatusResponse'
+  }
+] satisfies ReadonlyArray<ExpectedWebhookPayloadSchema>
+
+function expectPresent<T>(value: T | undefined, description: string): T {
+  expect(value).toBeDefined()
+  if (value === undefined) {
+    throw new Error(`${description} was not defined`)
+  }
+  return value
+}
+
+function expectRecord(value: unknown, description: string) {
+  expect(value).toBeDefined()
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${description} was not an object`)
+  }
+  return value as Record<string, unknown>
+}
+
+function getOpenApiOperation(body: OpenApiDocument, path: string, method: OpenApiMethod) {
+  return expectPresent(body.paths[path]?.[method], `${method.toUpperCase()} ${path} operation`)
+}
+
+function getWebhookOperation(body: OpenApiDocument, event: string) {
+  return expectPresent(body.webhooks[event]?.post, `${event} webhook operation`)
+}
+
+function getRequestBody(operation: OpenApiOperation, description: string) {
+  return expectPresent(operation.requestBody, `${description} request body`)
+}
+
+function getResponseExampleRecord(
+  operation: OpenApiOperation,
+  statusCode: string,
+  contentType: string,
+  description: string
+) {
+  const response = expectPresent(operation.responses[statusCode], `${description} response`)
+  return expectRecord(response.content[contentType]?.example, description)
+}
+
+function expectWebhookPayloadSchema(body: OpenApiDocument, expected: ExpectedWebhookPayloadSchema) {
+  expect(body.components.schemas[expected.schemaName]).toMatchObject({
+    required: ['event', 'job'],
+    properties: {
+      job: {
+        $ref: `#/components/schemas/${expected.jobSchemaName}`
+      }
+    }
+  })
+}
+
+function expectOpenApiOperation(body: OpenApiDocument, expected: ExpectedOpenApiOperation) {
+  const operation = getOpenApiOperation(body, expected.path, expected.method)
   expect(operation.operationId).toBe(expected.operationId)
   expect(operation.tags).toEqual([expected.tag])
   expect(operation.security).toEqual(expected.security)
 
   if (expected.requestContentTypes) {
-    expect(operation.requestBody.required).toBe(true)
-    expect(Object.keys(operation.requestBody.content)).toEqual(expected.requestContentTypes)
+    expect(operation.requestBody?.required).toBe(true)
+    expect(Object.keys(operation.requestBody?.content ?? {})).toEqual(expected.requestContentTypes)
   } else {
     expect(operation.requestBody).toBeUndefined()
   }
@@ -186,14 +309,15 @@ function createTestApp() {
   return createApp({ apiTokenStore: testApiTokenStore(), version: TEST_VERSION })
 }
 
+async function requestOpenApiDocument(app = createTestApp()) {
+  const res = await app.request('/openapi.json')
+  expect(res.status).toBe(200)
+  return (await res.json()) as OpenApiDocument
+}
+
 describe('API base routes', () => {
   test('GET /openapi.json documents public routes plus protected feeds and transcription auth metadata', async () => {
-    const app = createTestApp()
-    const res = await app.request('/openapi.json')
-
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
+    const body = await requestOpenApiDocument()
     expect(body.openapi).toBe('3.1.0')
     expect(body.info).toEqual({
       title: 'Girke API',
@@ -216,51 +340,58 @@ describe('API base routes', () => {
       expectOpenApiOperation(body, operation)
     }
 
-    expect(body.paths['/'].get.operationId).toBe('getApiRoot')
-    expect(body.paths['/'].get.tags).toEqual(['System'])
-    expect(body.paths['/'].get.security).toBeUndefined()
-    expect(body.paths['/'].get.responses['200'].content['application/json'].example).toEqual({
+    const rootOperation = getOpenApiOperation(body, '/', 'get')
+    expect(rootOperation.operationId).toBe('getApiRoot')
+    expect(rootOperation.tags).toEqual(['System'])
+    expect(rootOperation.security).toBeUndefined()
+    expect(rootOperation.responses['200'].content['application/json'].example).toEqual({
       name: 'api',
       internal: 'girke-api',
       version: TEST_VERSION
     })
-    expect(body.paths['/health'].get.operationId).toBe('getHealth')
-    expect(body.paths['/health'].get.security).toBeUndefined()
-    expect(body.paths['/health'].get.responses['200'].content['application/json'].schema.$ref).toBe(
+    const healthOperation = getOpenApiOperation(body, '/health', 'get')
+    expect(healthOperation.operationId).toBe('getHealth')
+    expect(healthOperation.security).toBeUndefined()
+    expect(healthOperation.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/HealthResponse'
     )
-    expect(body.paths['/version'].get.operationId).toBe('getVersion')
-    expect(body.paths['/version'].get.security).toBeUndefined()
-    expect(body.paths['/version'].get.responses['200'].content['application/json'].schema.$ref).toBe(
+    const versionOperation = getOpenApiOperation(body, '/version', 'get')
+    expect(versionOperation.operationId).toBe('getVersion')
+    expect(versionOperation.security).toBeUndefined()
+    expect(versionOperation.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/VersionResponse'
     )
 
-    expect(body.paths['/openapi.json'].get.operationId).toBe('getOpenApiDocument')
-    expect(body.paths['/openapi.json'].get.tags).toEqual(['API Reference'])
-    expect(body.paths['/openapi.json'].get.security).toBeUndefined()
-    expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.tags).toEqual(expectedOpenApiTags)
-    expect(
-      body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/feeds']
-    ).toEqual({})
-    expect(
-      body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/transcription']
-    ).toEqual({})
-    expect(
-      body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/oona/contact']
-    ).toEqual({})
-    expect(body.paths['/reference'].get.operationId).toBe('getApiReference')
-    expect(body.paths['/reference'].get.security).toBeUndefined()
-    expect(body.paths['/reference'].get.responses['200'].content['text/html'].schema.$ref).toBe(
+    const openApiDocumentOperation = getOpenApiOperation(body, '/openapi.json', 'get')
+    expect(openApiDocumentOperation.operationId).toBe('getOpenApiDocument')
+    expect(openApiDocumentOperation.tags).toEqual(['API Reference'])
+    expect(openApiDocumentOperation.security).toBeUndefined()
+    const openApiDocumentExample = getResponseExampleRecord(
+      openApiDocumentOperation,
+      '200',
+      'application/json',
+      'OpenAPI document example'
+    )
+    expect(openApiDocumentExample.tags).toEqual(expectedOpenApiTags)
+    const openApiDocumentPaths = expectRecord(openApiDocumentExample.paths, 'OpenAPI document example paths')
+    expect(openApiDocumentPaths['/api/v1/feeds']).toEqual({})
+    expect(openApiDocumentPaths['/api/v1/transcription']).toEqual({})
+    expect(openApiDocumentPaths['/api/v1/oona/contact']).toEqual({})
+    const referenceOperation = getOpenApiOperation(body, '/reference', 'get')
+    expect(referenceOperation.operationId).toBe('getApiReference')
+    expect(referenceOperation.security).toBeUndefined()
+    expect(referenceOperation.responses['200'].content['text/html'].schema.$ref).toBe(
       '#/components/schemas/ScalarHtmlDocument'
     )
     expect(body.components.schemas.ScalarHtmlDocument.type).toBe('string')
 
-    const contactOperation = body.paths['/api/v1/oona/contact'].post
+    const contactOperation = getOpenApiOperation(body, '/api/v1/oona/contact', 'post')
+    const contactRequestBody = getRequestBody(contactOperation, 'submit Oona contact')
     expect(contactOperation.operationId).toBe('submitOonaContact')
     expect(contactOperation.tags).toEqual(['Oona Contact'])
     expect(contactOperation.security).toBeUndefined()
-    expect(contactOperation.requestBody.required).toBe(true)
-    expect(contactOperation.requestBody.content['application/json'].schema.$ref).toBe(
+    expect(contactRequestBody.required).toBe(true)
+    expect(contactRequestBody.content['application/json'].schema.$ref).toBe(
       '#/components/schemas/OonaContactRequest'
     )
     expect(body.components.schemas.OonaContactRequest.required.sort()).toEqual(['email', 'message', 'name', 'subscribe'])
@@ -278,23 +409,24 @@ describe('API base routes', () => {
       error: 'invalid_request'
     })
 
-    expect(body.paths['/api/v1/feeds'].get.operationId).toBe('listFeeds')
-    expect(body.paths['/api/v1/feeds'].get.tags).toEqual(['Feeds'])
-    expect(body.paths['/api/v1/feeds'].get.security).toEqual([{ bearerAuth: [] }])
-    expect(body.paths['/api/v1/feeds'].get.responses['200'].content['application/json'].example).toEqual({
+    const feedsOperation = getOpenApiOperation(body, '/api/v1/feeds', 'get')
+    expect(feedsOperation.operationId).toBe('listFeeds')
+    expect(feedsOperation.tags).toEqual(['Feeds'])
+    expect(feedsOperation.security).toEqual(expectedBearerSecurity)
+    expect(feedsOperation.responses['200'].content['application/json'].example).toEqual({
       feeds: []
     })
-    expect(body.paths['/api/v1/feeds'].get.responses['401'].content['application/json'].schema.$ref).toBe(
+    expect(feedsOperation.responses['401'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/UnauthorizedErrorResponse'
     )
-    expect(body.paths['/api/v1/feeds'].get.responses['401'].content['application/json'].example).toEqual({
+    expect(feedsOperation.responses['401'].content['application/json'].example).toEqual({
       error: 'unauthorized'
     })
 
-    const transcriptionOperation = body.paths['/api/v1/transcription'].get
+    const transcriptionOperation = getOpenApiOperation(body, '/api/v1/transcription', 'get')
     expect(transcriptionOperation.operationId).toBe('getTranscriptionMetadata')
     expect(transcriptionOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionOperation.security).toEqual(expectedBearerSecurity)
     expect(transcriptionOperation.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionMetadataResponse'
     )
@@ -311,13 +443,14 @@ describe('API base routes', () => {
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Language Hint')
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.properties.code.enum).toEqual(['en', 'de'])
 
-    const transcriptionSyncOperation = body.paths['/api/v1/transcription/transcribe'].post
+    const transcriptionSyncOperation = getOpenApiOperation(body, '/api/v1/transcription/transcribe', 'post')
+    const transcriptionSyncRequestBody = getRequestBody(transcriptionSyncOperation, 'sync transcription')
     expect(transcriptionSyncOperation.operationId).toBe('transcribeSynchronously')
     expect(transcriptionSyncOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionSyncOperation.security).toEqual([{ bearerAuth: [] }])
-    expect(transcriptionSyncOperation.requestBody.required).toBe(true)
-    expect(Object.keys(transcriptionSyncOperation.requestBody.content)).toEqual(['multipart/form-data'])
-    expect(transcriptionSyncOperation.requestBody.content['multipart/form-data'].schema.$ref).toBe(
+    expect(transcriptionSyncOperation.security).toEqual(expectedBearerSecurity)
+    expect(transcriptionSyncRequestBody.required).toBe(true)
+    expect(Object.keys(transcriptionSyncRequestBody.content)).toEqual(['multipart/form-data'])
+    expect(transcriptionSyncRequestBody.content['multipart/form-data'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionSyncRequest'
     )
     expect(Object.keys(transcriptionSyncOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502'])
@@ -352,10 +485,10 @@ describe('API base routes', () => {
     expect(body.components.schemas.TranscriptionSyncResponse.properties.language.description).toContain('Language Hint')
     expect(body.components.schemas.TranscriptionSyncResponse.properties.detected_language.description).toContain('Detected Language')
 
-    const transcriptionJobsListOperation = body.paths['/api/v1/transcription/jobs'].get
+    const transcriptionJobsListOperation = getOpenApiOperation(body, '/api/v1/transcription/jobs', 'get')
     expect(transcriptionJobsListOperation.operationId).toBe('listTranscriptionJobs')
     expect(transcriptionJobsListOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionJobsListOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobsListOperation.security).toEqual(expectedBearerSecurity)
     expect(Object.keys(transcriptionJobsListOperation.responses).sort()).toEqual(['200', '401'])
     expect(transcriptionJobsListOperation.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionJobListResponse'
@@ -368,13 +501,14 @@ describe('API base routes', () => {
       '#/components/schemas/TranscriptionJobSummary'
     )
 
-    const transcriptionJobsCreateOperation = body.paths['/api/v1/transcription/jobs'].post
+    const transcriptionJobsCreateOperation = getOpenApiOperation(body, '/api/v1/transcription/jobs', 'post')
+    const transcriptionJobsCreateRequestBody = getRequestBody(transcriptionJobsCreateOperation, 'create transcription job')
     expect(transcriptionJobsCreateOperation.operationId).toBe('createTranscriptionJob')
     expect(transcriptionJobsCreateOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionJobsCreateOperation.security).toEqual([{ bearerAuth: [] }])
-    expect(transcriptionJobsCreateOperation.requestBody.required).toBe(true)
-    expect(Object.keys(transcriptionJobsCreateOperation.requestBody.content)).toEqual(['multipart/form-data'])
-    expect(transcriptionJobsCreateOperation.requestBody.content['multipart/form-data'].schema.$ref).toBe(
+    expect(transcriptionJobsCreateOperation.security).toEqual(expectedBearerSecurity)
+    expect(transcriptionJobsCreateRequestBody.required).toBe(true)
+    expect(Object.keys(transcriptionJobsCreateRequestBody.content)).toEqual(['multipart/form-data'])
+    expect(transcriptionJobsCreateRequestBody.content['multipart/form-data'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionJobCreateRequest'
     )
     expect(Object.keys(transcriptionJobsCreateOperation.responses).sort()).toEqual(['202', '400', '401', '413', '415', '422', '500'])
@@ -392,10 +526,10 @@ describe('API base routes', () => {
     expect(body.components.schemas.TranscriptionJobCreateRequest.properties.language.enum).toEqual(['auto', 'en', 'de'])
     expect(body.components.schemas.TranscriptionJobCreateRequest.properties.webhook_url.format).toBe('uri')
 
-    const transcriptionJobStatusOperation = body.paths['/api/v1/transcription/jobs/{job_id}'].get
+    const transcriptionJobStatusOperation = getOpenApiOperation(body, '/api/v1/transcription/jobs/{job_id}', 'get')
     expect(transcriptionJobStatusOperation.operationId).toBe('getTranscriptionJob')
     expect(transcriptionJobStatusOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionJobStatusOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobStatusOperation.security).toEqual(expectedBearerSecurity)
     expect(transcriptionJobStatusOperation.parameters).toEqual([
       expect.objectContaining({
         name: 'job_id',
@@ -410,10 +544,10 @@ describe('API base routes', () => {
     )
     expect(transcriptionJobStatusOperation.responses['404'].content['application/json'].example).toEqual({ error: 'not_found' })
 
-    const transcriptionJobResultOperation = body.paths['/api/v1/transcription/jobs/{job_id}/result'].get
+    const transcriptionJobResultOperation = getOpenApiOperation(body, '/api/v1/transcription/jobs/{job_id}/result', 'get')
     expect(transcriptionJobResultOperation.operationId).toBe('getTranscriptionJobResult')
     expect(transcriptionJobResultOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionJobResultOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobResultOperation.security).toEqual(expectedBearerSecurity)
     expect(transcriptionJobResultOperation.parameters).toEqual([
       expect.objectContaining({
         name: 'job_id',
@@ -436,10 +570,10 @@ describe('API base routes', () => {
     )
     expect(transcriptionJobResultOperation.responses['500'].content['application/json'].example).toEqual({ error: 'job_result_missing' })
 
-    const transcriptionJobCancelOperation = body.paths['/api/v1/transcription/jobs/{job_id}'].delete
+    const transcriptionJobCancelOperation = getOpenApiOperation(body, '/api/v1/transcription/jobs/{job_id}', 'delete')
     expect(transcriptionJobCancelOperation.operationId).toBe('cancelTranscriptionJob')
     expect(transcriptionJobCancelOperation.tags).toEqual(['Transcription'])
-    expect(transcriptionJobCancelOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobCancelOperation.security).toEqual(expectedBearerSecurity)
     expect(transcriptionJobCancelOperation.parameters).toEqual([
       expect.objectContaining({
         name: 'job_id',
@@ -459,43 +593,18 @@ describe('API base routes', () => {
   })
 
   test('GET /openapi.json documents transcription webhook payloads and the OpenAPI document example', async () => {
-    const app = createTestApp()
-    const res = await app.request('/openapi.json')
-
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
+    const body = await requestOpenApiDocument()
     expect(Object.keys(body.webhooks).sort()).toEqual([
       'transcription.job.cancelled',
       'transcription.job.completed',
       'transcription.job.failed'
     ])
-    expect(body.components.schemas.TranscriptionJobCompletedWebhookPayload).toMatchObject({
-      required: ['event', 'job'],
-      properties: {
-        job: {
-          $ref: '#/components/schemas/TranscriptionJobCompletedStatusResponse'
-        }
-      }
-    })
-    expect(body.components.schemas.TranscriptionJobFailedWebhookPayload).toMatchObject({
-      required: ['event', 'job'],
-      properties: {
-        job: {
-          $ref: '#/components/schemas/TranscriptionJobFailedStatusResponse'
-        }
-      }
-    })
-    expect(body.components.schemas.TranscriptionJobCancelledWebhookPayload).toMatchObject({
-      required: ['event', 'job'],
-      properties: {
-        job: {
-          $ref: '#/components/schemas/TranscriptionJobCancelledStatusResponse'
-        }
-      }
-    })
+    for (const webhookPayloadSchema of expectedWebhookPayloadSchemas) {
+      expectWebhookPayloadSchema(body, webhookPayloadSchema)
+    }
 
-    const completedWebhook = body.webhooks['transcription.job.completed'].post
+    const completedWebhook = getWebhookOperation(body, 'transcription.job.completed')
+    const completedWebhookRequestBody = getRequestBody(completedWebhook, 'completed transcription webhook')
     expect(completedWebhook.operationId).toBe('deliverTranscriptionJobCompletedWebhook')
     expect(completedWebhook.tags).toEqual(['Transcription'])
     expect(completedWebhook.description).toContain('retry')
@@ -508,26 +617,39 @@ describe('API base routes', () => {
         required: false
       })
     ])
-    expect(completedWebhook.requestBody.required).toBe(true)
-    expect(completedWebhook.requestBody.content['application/json'].schema.$ref).toBe(
+    expect(completedWebhookRequestBody.required).toBe(true)
+    expect(completedWebhookRequestBody.content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionJobCompletedWebhookPayload'
     )
 
-    expect(body.webhooks['transcription.job.failed'].post.requestBody.content['application/json'].schema.$ref).toBe(
+    const failedWebhook = getWebhookOperation(body, 'transcription.job.failed')
+    const failedWebhookRequestBody = getRequestBody(failedWebhook, 'failed transcription webhook')
+    expect(failedWebhookRequestBody.content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionJobFailedWebhookPayload'
     )
-    expect(body.webhooks['transcription.job.cancelled'].post.requestBody.content['application/json'].schema.$ref).toBe(
+    const cancelledWebhook = getWebhookOperation(body, 'transcription.job.cancelled')
+    const cancelledWebhookRequestBody = getRequestBody(cancelledWebhook, 'cancelled transcription webhook')
+    expect(cancelledWebhookRequestBody.content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionJobCancelledWebhookPayload'
     )
-    expect(body.paths['/api/v1/transcription/jobs'].post.requestBody.description).toContain('x-girke-signature')
-    expect(body.paths['/api/v1/transcription/jobs'].post.requestBody.description).toContain(
+    const transcriptionJobsCreateOperation = getOpenApiOperation(body, '/api/v1/transcription/jobs', 'post')
+    const transcriptionJobsCreateRequestBody = getRequestBody(transcriptionJobsCreateOperation, 'create transcription job')
+    expect(transcriptionJobsCreateRequestBody.description).toContain('x-girke-signature')
+    expect(transcriptionJobsCreateRequestBody.description).toContain(
       'do not change the terminal Transcription Job status'
     )
     expect(body.components.schemas.TranscriptionJobCreateRequest.properties.webhook_url.description).toContain(
       'completed, failed, and cancelled'
     )
 
-    expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.webhooks).toEqual({
+    const openApiDocumentOperation = getOpenApiOperation(body, '/openapi.json', 'get')
+    const openApiDocumentExample = getResponseExampleRecord(
+      openApiDocumentOperation,
+      '200',
+      'application/json',
+      'OpenAPI document example'
+    )
+    expect(expectRecord(openApiDocumentExample.webhooks, 'OpenAPI document example webhooks')).toEqual({
       'transcription.job.completed': {},
       'transcription.job.failed': {},
       'transcription.job.cancelled': {}

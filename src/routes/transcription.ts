@@ -1197,6 +1197,14 @@ const transcriptionJobCreateLanguageFieldSchema = z
       'Optional Language Hint. Accepted aliases normalize to supported values and omitted values default to auto detection.'
   })
 
+const TRANSCRIPTION_WEBHOOK_SIGNATURE_HEADER = 'x-girke-signature'
+const TRANSCRIPTION_WEBHOOK_TERMINAL_EVENTS_DESCRIPTION = 'completed, failed, and cancelled'
+const TRANSCRIPTION_WEBHOOK_RETRY_STATUS_DESCRIPTION = 'Delivery retries do not change the terminal Transcription Job status.'
+const TRANSCRIPTION_WEBHOOK_REQUEST_SIGNATURE_DESCRIPTION =
+  `When a webhook secret is configured, requests include the ${TRANSCRIPTION_WEBHOOK_SIGNATURE_HEADER} HMAC SHA-256 header.`
+const TRANSCRIPTION_JOB_CREATE_WEBHOOK_URL_DESCRIPTION =
+  `Optional HTTPS webhook URL for ${TRANSCRIPTION_WEBHOOK_TERMINAL_EVENTS_DESCRIPTION} Transcription Job notifications. ${TRANSCRIPTION_WEBHOOK_RETRY_STATUS_DESCRIPTION} ${TRANSCRIPTION_WEBHOOK_REQUEST_SIGNATURE_DESCRIPTION}`
+
 const transcriptionJobCreateWebhookUrlFieldSchema = z
   .preprocess(
     normalizeMultipartWebhookUrlField,
@@ -1209,8 +1217,7 @@ const transcriptionJobCreateWebhookUrlFieldSchema = z
   .openapi({
     example: 'https://example.com/hooks/transcription',
     format: 'uri',
-    description:
-      'Optional HTTPS webhook URL for completed, failed, and cancelled Transcription Job notifications. Delivery retries do not change the terminal Transcription Job status. When a webhook secret is configured, requests include the x-girke-signature HMAC SHA-256 header.'
+    description: TRANSCRIPTION_JOB_CREATE_WEBHOOK_URL_DESCRIPTION
   })
 
 const transcriptionJobCreateRequestSchema = z
@@ -1575,11 +1582,10 @@ const transcriptionJobCancellationResponseSchema = createTranscriptionJobCancell
   'Cancelled Transcription Job returned for successful or idempotent cancellation requests.'
 )
 
-const TRANSCRIPTION_WEBHOOK_SIGNATURE_HEADER = 'x-girke-signature'
 const TRANSCRIPTION_WEBHOOK_DESCRIPTION =
   'Outgoing HTTPS webhook sent to the caller-configured webhook_url. Non-2xx receiver responses or delivery failures trigger retry attempts with exponential backoff and do not change the terminal Transcription Job status. When a webhook secret is configured, the x-girke-signature header contains an HMAC SHA-256 of the JSON request body.'
 const TRANSCRIPTION_JOB_CREATE_REQUEST_BODY_DESCRIPTION =
-  'Multipart upload fields for async Transcription Job creation. Omitted level defaults to medium, omitted language defaults to auto, webhook_url must be HTTPS when provided, and webhook deliveries include completed, failed, and cancelled terminal events. Delivery retries do not change the terminal Transcription Job status. When a webhook secret is configured, requests include the x-girke-signature HMAC SHA-256 header.'
+  `Multipart upload fields for async Transcription Job creation. Omitted level defaults to medium, omitted language defaults to auto, webhook_url must be HTTPS when provided, and webhook deliveries include ${TRANSCRIPTION_WEBHOOK_TERMINAL_EVENTS_DESCRIPTION} terminal events. ${TRANSCRIPTION_WEBHOOK_RETRY_STATUS_DESCRIPTION} ${TRANSCRIPTION_WEBHOOK_REQUEST_SIGNATURE_DESCRIPTION}`
 const TRANSCRIPTION_WEBHOOK_REQUEST_BODY_DESCRIPTION = 'Webhook JSON payload sent for the terminal Transcription Job event.'
 const TRANSCRIPTION_WEBHOOK_ACKNOWLEDGED_DESCRIPTION = 'Webhook receiver acknowledged the delivery.'
 const TRANSCRIPTION_WEBHOOK_DELIVERY_FAILURE_DESCRIPTION =
@@ -1669,8 +1675,10 @@ const transcriptionWebhookDocumentation = [
   })
 ] as const
 
-function registerTranscriptionWebhook(app: OpenAPIHono<AppEnv>, webhook: (typeof transcriptionWebhookDocumentation)[number]) {
-  const payloadSchema = app.openAPIRegistry.register(webhook.schemaName, webhook.payloadSchema)
+type TranscriptionWebhookDocumentation = (typeof transcriptionWebhookDocumentation)[number]
+
+function registerTranscriptionWebhook(app: OpenAPIHono<AppEnv>, webhook: TranscriptionWebhookDocumentation) {
+  const registeredPayloadSchema = app.openAPIRegistry.register(webhook.schemaName, webhook.payloadSchema)
 
   app.openAPIRegistry.registerWebhook({
     method: 'post',
@@ -1686,7 +1694,7 @@ function registerTranscriptionWebhook(app: OpenAPIHono<AppEnv>, webhook: (typeof
         description: TRANSCRIPTION_WEBHOOK_REQUEST_BODY_DESCRIPTION,
         content: {
           'application/json': {
-            schema: payloadSchema,
+            schema: registeredPayloadSchema,
             example: webhook.payloadExample
           }
         }
