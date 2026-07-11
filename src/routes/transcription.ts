@@ -67,7 +67,7 @@ const transcriptionSegmentSchema = z
   })
   .openapi('TranscriptionSegment')
 
-const whisperResponseSchema = z
+const whisperTranscriptionResponseSchema = z
   .object({
     text: z.string().openapi({ example: transcriptionSyncResponseExample.text, description: 'Full transcript text for the uploaded media.' }),
     segments: z.array(transcriptionSegmentSchema).openapi({
@@ -103,7 +103,7 @@ const whisperResponseSchema = z
     description: 'Synchronous transcription result for a short clip upload.'
   })
 
-type WhisperResponse = z.infer<typeof whisperResponseSchema>
+type WhisperTranscriptionResponse = z.infer<typeof whisperTranscriptionResponseSchema>
 
 class TranscriptionWorkerError extends Error {
   constructor(
@@ -316,15 +316,25 @@ type TranscriptionJobSummaryResponse = z.infer<typeof transcriptionJobSummarySch
 type TranscriptionJobListResponse = z.infer<typeof transcriptionJobListResponseSchema>
 type TranscriptionJobCreateAcceptedResponse = z.infer<typeof transcriptionJobCreateAcceptedResponseSchema>
 
-function normalizeCreateJobField<T>(value: unknown, normalize: (value: FormDataEntryValue | null) => T | null) {
+function normalizeMultipartField<T>(value: unknown, normalize: (value: FormDataEntryValue | null) => T | null) {
   const normalized = normalize((value as FormDataEntryValue | undefined) ?? null)
   return normalized === null ? value : normalized
 }
 
-function normalizeCreateJobWebhookUrlField(value: unknown) {
+function normalizeMultipartWebhookUrlField(value: unknown) {
   const normalized = normalizeWebhookUrl((value as FormDataEntryValue | undefined) ?? null)
   if (normalized === null) return undefined
   return normalized === false ? value : normalized
+}
+
+function createWhisperTranscriptionFormData(file: File, level: TranscriptionLevel, language: TranscriptionLanguage) {
+  const form = new FormData()
+  form.set('file', file, file.name)
+  form.set('level', level)
+  if (language !== 'auto') {
+    form.set('language', language)
+  }
+  return form
 }
 
 function createLiteralErrorSchema<Code extends string>(name: string, error: Code) {
@@ -333,6 +343,38 @@ function createLiteralErrorSchema<Code extends string>(name: string, error: Code
       error: z.literal(error).openapi({ example: error })
     })
     .openapi(name)
+}
+
+function getMultipartFieldErrorBody<FieldName extends string, ResponseBody>(
+  issues: z.ZodIssue[],
+  fieldOrder: readonly FieldName[],
+  bodies: Record<FieldName, ResponseBody>
+) {
+  const fieldErrors = new Set(issues.map((issue) => String(issue.path[0] ?? '')))
+
+  for (const field of fieldOrder) {
+    if (fieldErrors.has(field)) {
+      return bodies[field]
+    }
+  }
+
+  return bodies[fieldOrder[0]]
+}
+
+function createTranscriptionSyncUploadTooLargeBody(maxBytes: number) {
+  return {
+    error: 'sync_upload_too_large' as const,
+    max_bytes: maxBytes,
+    jobs_url: transcriptionJobsPath
+  }
+}
+
+function createTranscriptionSyncMediaTooLongBody(maxDurationSeconds: number) {
+  return {
+    error: 'sync_media_too_long' as const,
+    max_duration_seconds: maxDurationSeconds,
+    jobs_url: transcriptionJobsPath
+  }
 }
 
 function serializeJob(job: TranscriptionJobRecord): TranscriptionJobSummaryResponse {
@@ -690,17 +732,10 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
     }
   }
 
-  private async transcribeFile(file: File, level: TranscriptionLevel, language: TranscriptionLanguage): Promise<WhisperResponse> {
-    const outgoing = new FormData()
-    outgoing.set('file', file, file.name)
-    outgoing.set('level', level)
-    if (language !== 'auto') {
-      outgoing.set('language', language)
-    }
-
+  private async transcribeFile(file: File, level: TranscriptionLevel, language: TranscriptionLanguage): Promise<WhisperTranscriptionResponse> {
     const response = await this.opts.whisperFetch(`${this.opts.whisperUrl}/transcribe`, {
       method: 'POST',
-      body: outgoing
+      body: createWhisperTranscriptionFormData(file, level, language)
     })
 
     if (!response.ok) {
@@ -709,7 +744,7 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
       throw new TranscriptionWorkerError('TRANSCRIPTION_WORKER_FAILED', `Whisper failed with status ${response.status}`)
     }
 
-    return whisperResponseSchema.parse(await response.json())
+    return whisperTranscriptionResponseSchema.parse(await response.json())
   }
 
   private async transcribeChunkWithRetry(file: File, level: TranscriptionLevel, language: TranscriptionLanguage) {
@@ -1054,7 +1089,7 @@ const transcriptionSyncWhisperFailedResponseSchema = createLiteralErrorSchema(
 
 const transcriptionSyncLevelFieldSchema = z
   .preprocess(
-    (value) => normalizeCreateJobField(value, normalizeLevel),
+    (value) => normalizeMultipartField(value, normalizeLevel),
     z.enum(TRANSCRIPTION_LEVELS).optional()
   )
   .transform((value) => value ?? DEFAULT_TRANSCRIPTION_LEVEL)
@@ -1067,7 +1102,7 @@ const transcriptionSyncLevelFieldSchema = z
 
 const transcriptionSyncLanguageFieldSchema = z
   .preprocess(
-    (value) => normalizeCreateJobField(value, normalizeLanguage),
+    (value) => normalizeMultipartField(value, normalizeLanguage),
     z.enum(TRANSCRIPTION_LANGUAGE_HINTS).optional()
   )
   .transform((value) => value ?? 'auto')
@@ -1104,20 +1139,12 @@ const transcriptionSyncBadRequestBodies = {
 const transcriptionSyncBadRequestFieldOrder = ['file', 'level', 'language'] as const
 
 function getTranscriptionSyncBadRequestBody(issues: z.ZodIssue[]): TranscriptionSyncBadRequestResponse {
-  const fieldErrors = new Set(issues.map((issue) => String(issue.path[0] ?? '')))
-
-  for (const field of transcriptionSyncBadRequestFieldOrder) {
-    if (fieldErrors.has(field)) {
-      return transcriptionSyncBadRequestBodies[field]
-    }
-  }
-
-  return transcriptionSyncBadRequestBodies.file
+  return getMultipartFieldErrorBody(issues, transcriptionSyncBadRequestFieldOrder, transcriptionSyncBadRequestBodies)
 }
 
 const transcriptionJobCreateLevelFieldSchema = z
   .preprocess(
-    (value) => normalizeCreateJobField(value, normalizeLevel),
+    (value) => normalizeMultipartField(value, normalizeLevel),
     z.enum(TRANSCRIPTION_LEVELS).optional()
   )
   .transform((value) => value ?? DEFAULT_TRANSCRIPTION_LEVEL)
@@ -1130,7 +1157,7 @@ const transcriptionJobCreateLevelFieldSchema = z
 
 const transcriptionJobCreateLanguageFieldSchema = z
   .preprocess(
-    (value) => normalizeCreateJobField(value, normalizeLanguage),
+    (value) => normalizeMultipartField(value, normalizeLanguage),
     z.enum(TRANSCRIPTION_LANGUAGE_HINTS).optional()
   )
   .transform((value) => value ?? 'auto')
@@ -1144,7 +1171,7 @@ const transcriptionJobCreateLanguageFieldSchema = z
 
 const transcriptionJobCreateWebhookUrlFieldSchema = z
   .preprocess(
-    normalizeCreateJobWebhookUrlField,
+    normalizeMultipartWebhookUrlField,
     z
       .string()
       .url()
@@ -1184,15 +1211,7 @@ const transcriptionJobCreateBadRequestBodies = {
 const transcriptionJobCreateBadRequestFieldOrder = ['file', 'level', 'language', 'webhook_url'] as const
 
 function getTranscriptionJobCreateBadRequestBody(issues: z.ZodIssue[]): TranscriptionJobCreateBadRequestResponse {
-  const fieldErrors = new Set(issues.map((issue) => String(issue.path[0] ?? '')))
-
-  for (const field of transcriptionJobCreateBadRequestFieldOrder) {
-    if (fieldErrors.has(field)) {
-      return transcriptionJobCreateBadRequestBodies[field]
-    }
-  }
-
-  return transcriptionJobCreateBadRequestBodies.file
+  return getMultipartFieldErrorBody(issues, transcriptionJobCreateBadRequestFieldOrder, transcriptionJobCreateBadRequestBodies)
 }
 
 const listTranscriptionJobsRoute = createRoute({
@@ -1291,7 +1310,7 @@ const transcriptionSyncRoute = createRoute({
   responses: {
     200: createJsonResponse(
       'Synchronous transcription completed successfully.',
-      whisperResponseSchema,
+      whisperTranscriptionResponseSchema,
       transcriptionSyncResponseExample
     ),
     400: createJsonResponse(
@@ -1425,7 +1444,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       const level = form.level
       const language = form.language
       if (file.size > syncMaxUploadBytes) {
-        return c.json({ error: 'sync_upload_too_large', max_bytes: syncMaxUploadBytes, jobs_url: transcriptionJobsPath }, 413)
+        return c.json(createTranscriptionSyncUploadTooLargeBody(syncMaxUploadBytes), 413)
       }
       if (!isSupportedMedia(file.name)) {
         return c.json({ error: 'unsupported_media_format' }, 415)
@@ -1435,22 +1454,15 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       try {
         const duration = await durationProbe.probe(tempUpload.path)
         if (duration.durationSeconds !== null && duration.durationSeconds > syncMaxDurationSeconds) {
-          return c.json({ error: 'sync_media_too_long', max_duration_seconds: syncMaxDurationSeconds, jobs_url: transcriptionJobsPath }, 422)
+          return c.json(createTranscriptionSyncMediaTooLongBody(syncMaxDurationSeconds), 422)
         }
       } finally {
         await rm(tempUpload.dir, { recursive: true, force: true })
       }
 
-      const outgoing = new FormData()
-      outgoing.set('file', file, file.name)
-      outgoing.set('level', level)
-      if (language !== 'auto') {
-        outgoing.set('language', language)
-      }
-
       const response = await whisperFetch(`${whisperUrl}/transcribe`, {
         method: 'POST',
-        body: outgoing
+        body: createWhisperTranscriptionFormData(file, level, language)
       })
 
       if (!response.ok) {
@@ -1463,9 +1475,9 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
         return c.json({ error: 'whisper_failed' }, 502)
       }
 
-      const parsed = whisperResponseSchema.parse(await response.json())
+      const parsed = whisperTranscriptionResponseSchema.parse(await response.json())
       if (parsed.duration_seconds > syncMaxDurationSeconds) {
-        return c.json({ error: 'sync_media_too_long', max_duration_seconds: syncMaxDurationSeconds, jobs_url: transcriptionJobsPath }, 422)
+        return c.json(createTranscriptionSyncMediaTooLongBody(syncMaxDurationSeconds), 422)
       }
       return c.json(parsed, 200)
     },
