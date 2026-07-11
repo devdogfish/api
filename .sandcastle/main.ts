@@ -21,11 +21,86 @@
 // Or add to package.json:
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.ts" }
 
-import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+
+function loadDotEnv(filePath: string) {
+  if (!existsSync(filePath)) {
+    return;
+  }
+
+  for (const rawLine of readFileSync(filePath, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) {
+      continue;
+    }
+
+    let value = rawValue.trim();
+    const quote = value[0];
+    if ((quote === `"` || quote === `'`) && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    }
+    if (quote === `"`) {
+      value = value
+        .replaceAll(String.raw`\n`, "\n")
+        .replaceAll(String.raw`\r`, "\r")
+        .replaceAll(String.raw`\"`, `"`)
+        .replaceAll(String.raw`\\`, "\\");
+    }
+
+    if (!value) {
+      continue;
+    }
+
+    process.env[key] = value;
+  }
+}
+
+loadDotEnv(path.join(".sandcastle", ".env"));
+
+function ensureGitHubToken() {
+  const configuredToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (configuredToken) {
+    process.env.GH_TOKEN = configuredToken;
+    return;
+  }
+
+  try {
+    const ghToken = execFileSync("gh", ["auth", "token"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (ghToken) {
+      process.env.GH_TOKEN = ghToken;
+    }
+  } catch {
+    // Sandcastle will fail fast below with setup guidance.
+  }
+}
+
+ensureGitHubToken();
+
+if (!process.env.GH_TOKEN) {
+  throw new Error(
+    "Missing GitHub token. Run `gh auth login` or set GH_TOKEN in .sandcastle/.env.",
+  );
+}
+
+const sandcastle = await import("@ai-hero/sandcastle");
+const { docker } = await import("@ai-hero/sandcastle/sandboxes/docker");
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -51,10 +126,19 @@ const hostCodexHome = path.join(os.homedir(), ".codex");
 const sandboxCodexMount = "/mnt/host-codex";
 const sandboxCodexHome = "/home/agent/.codex";
 
+const sandboxEnv: Record<string, string> = {
+  CODEX_HOME: sandboxCodexHome,
+};
+
+for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_REPO"] as const) {
+  const value = process.env[key];
+  if (value) {
+    sandboxEnv[key] = value;
+  }
+}
+
 const dockerSandbox = docker({
-  env: {
-    CODEX_HOME: sandboxCodexHome,
-  },
+  env: sandboxEnv,
   mounts: [
     {
       hostPath: hostCodexHome,
@@ -102,6 +186,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const plan = await sandcastle.run({
     hooks,
     sandbox: dockerSandbox,
+    branchStrategy: { type: "merge-to-head" },
     name: "planner",
     // One iteration is enough: the planner just needs to read and reason,
     // not write code. (Structured output requires maxIterations: 1.)
@@ -236,6 +321,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   await sandcastle.run({
     hooks,
     sandbox: dockerSandbox,
+    branchStrategy: { type: "merge-to-head" },
     name: "merger",
     maxIterations: 1,
     agent: sandcastle.codex("gpt-5.4"),
