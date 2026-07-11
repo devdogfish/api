@@ -2,9 +2,15 @@ import { describe, expect, test } from 'bun:test'
 import { createApp } from '../src/app'
 import { authHeaders, testApiTokenStore } from './helpers'
 
+const TEST_VERSION = 'test-version'
+
+function createTestApp() {
+  return createApp({ apiTokenStore: testApiTokenStore(), version: TEST_VERSION })
+}
+
 describe('API base routes', () => {
   test('GET /openapi.json documents public system routes and docs endpoints', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+    const app = createTestApp()
     const res = await app.request('/openapi.json')
 
     expect(res.status).toBe(200)
@@ -13,7 +19,7 @@ describe('API base routes', () => {
     expect(body.openapi).toBe('3.1.0')
     expect(body.info).toEqual({
       title: 'Girke API',
-      version: 'test-version',
+      version: TEST_VERSION,
       description: 'Public API contract for Girke API.'
     })
     expect(body.components.securitySchemes).toEqual({
@@ -32,7 +38,7 @@ describe('API base routes', () => {
     expect(body.paths['/'].get.responses['200'].content['application/json'].example).toEqual({
       name: 'api',
       internal: 'girke-api',
-      version: 'test-version'
+      version: TEST_VERSION
     })
     expect(body.paths['/health'].get.operationId).toBe('getHealth')
     expect(body.paths['/health'].get.responses['200'].content['application/json'].schema.$ref).toBe(
@@ -53,7 +59,7 @@ describe('API base routes', () => {
   })
 
   test('GET /reference returns public Scalar HTML pointed at the OpenAPI document', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+    const app = createTestApp()
     const res = await app.request('/reference')
 
     expect(res.status).toBe(200)
@@ -66,21 +72,21 @@ describe('API base routes', () => {
   })
 
   test('GET /health returns ok without auth', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+    const app = createTestApp()
     const res = await app.request('/health')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
   })
 
   test('GET /version returns configured version without auth', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+    const app = createTestApp()
     const res = await app.request('/version')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ version: 'test-version' })
+    expect(await res.json()).toEqual({ version: TEST_VERSION })
   })
 
   test('protected routes require a valid Girke bearer token', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+    const app = createTestApp()
     const missing = await app.request('/api/v1/transcription/jobs')
     expect(missing.status).toBe(401)
 

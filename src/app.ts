@@ -4,10 +4,21 @@ import { requestLogger } from './middleware/logger'
 import { bearerTokenAuth, type ApiTokenStore } from './middleware/auth'
 import type { AppEnv } from './appEnv'
 import { transcriptionRoutes } from './routes/transcription'
-import type { TranscriptionFetch, TranscriptionJobStore, TranscriptionWebhookFetch, TranscriptionWorker } from './routes/transcription'
+import type {
+  TranscriptionFetch,
+  TranscriptionJobStore,
+  TranscriptionWebhookFetch,
+  TranscriptionWorker
+} from './routes/transcription'
 import type { TranscriptionDurationProbe, TranscriptionMediaProcessor } from './transcription/mediaProcessor'
 import { feedRoutes } from './routes/feeds'
-import { oonaContactRoutes, type MailSender, type SenderConfig, type SenderFetch, type SmtpConfig } from './routes/oonaContact'
+import {
+  oonaContactRoutes,
+  type MailSender,
+  type SenderConfig,
+  type SenderFetch,
+  type SmtpConfig
+} from './routes/oonaContact'
 import { registerSystemRoutes } from './routes/system'
 
 export type AppConfig = {
@@ -43,7 +54,15 @@ export function createApp(config: AppConfig) {
 
   registerSystemRoutes(app, config.version)
 
-  app.route('/api/v1/oona/contact', oonaContactRoutes({ sender: config.sender, senderFetch: config.senderFetch, smtp: config.smtp, mailSender: config.mailSender }))
+  app.route(
+    '/api/v1/oona/contact',
+    oonaContactRoutes({
+      sender: config.sender,
+      senderFetch: config.senderFetch,
+      smtp: config.smtp,
+      mailSender: config.mailSender
+    })
+  )
 
   app.use('/api/v1/*', bearerTokenAuth(config.apiTokenStore))
   app.route(
