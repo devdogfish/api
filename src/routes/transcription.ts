@@ -3,9 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Hono } from 'hono'
+import { OpenAPIHono, createRoute } from '@hono/zod-openapi'
 import { z } from 'zod'
-import type { AuthVariables } from '../middleware/auth'
+import type { AppEnv } from '../appEnv'
+import { createJsonResponse, PROTECTED_BEARER_SECURITY, TRANSCRIPTION_TAG, unauthorizedErrorResponse } from '../openapi'
 import {
   createFfmpegMediaProcessor,
   createFfmpegDurationProbe,
@@ -15,22 +16,26 @@ import {
   type TranscriptionMediaChunk,
   type TranscriptionMediaProcessor
 } from '../transcription/mediaProcessor'
+import {
+  createTranscriptionMetadataResponse,
+  DEFAULT_TRANSCRIPTION_LEVEL,
+  SUPPORTED_MEDIA_EXTENSIONS,
+  TRANSCRIPTION_LANGUAGE_HINTS,
+  transcriptionMetadataResponseExample,
+  transcriptionMetadataResponseSchema,
+  TRANSCRIPTION_LEVELS,
+  type TranscriptionJobStatus,
+  type TranscriptionLanguage,
+  type TranscriptionLevel
+} from './transcriptionContract'
 
-const LEVELS = ['low', 'medium', 'high'] as const
-const LANGUAGES = ['en', 'de'] as const
-const LANGUAGE_HINTS = ['auto', ...LANGUAGES] as const
-const JOB_STATUSES = ['queued', 'processing', 'completed', 'failed', 'cancelled'] as const
-const SUPPORTED_AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'webm'] as const
-const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'mov', 'mkv', 'webm', 'avi'] as const
-const SUPPORTED_MEDIA_EXTENSIONS = new Set<string>([...SUPPORTED_AUDIO_EXTENSIONS, ...SUPPORTED_VIDEO_EXTENSIONS])
+export type { TranscriptionJobStatus, TranscriptionLanguage, TranscriptionLevel } from './transcriptionContract'
+
 const DEFAULT_SYNC_MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 const DEFAULT_SYNC_MAX_DURATION_SECONDS = 300
 const DEFAULT_ASYNC_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 const DEFAULT_ASYNC_MAX_DURATION_SECONDS = 4 * 60 * 60
 
-export type TranscriptionLevel = (typeof LEVELS)[number]
-export type TranscriptionLanguage = (typeof LANGUAGE_HINTS)[number]
-type TranscriptionJobStatus = (typeof JOB_STATUSES)[number]
 export type TranscriptionFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>
 
 const whisperResponseSchema = z.object({
@@ -44,8 +49,8 @@ const whisperResponseSchema = z.object({
   ),
   duration_seconds: z.number(),
   processing_seconds: z.number(),
-  level: z.enum(LEVELS),
-  language: z.enum(LANGUAGE_HINTS),
+  level: z.enum(TRANSCRIPTION_LEVELS),
+  language: z.enum(TRANSCRIPTION_LANGUAGE_HINTS),
   detected_language: z.string().nullable(),
   model: z.string()
 })
@@ -200,10 +205,10 @@ export type TranscriptionRouteOptions = {
 }
 
 function normalizeLevel(value: FormDataEntryValue | null): TranscriptionLevel | null {
-  if (value === null || value === '') return 'medium'
+  if (value === null || value === '') return DEFAULT_TRANSCRIPTION_LEVEL
   if (typeof value !== 'string') return null
   const normalized = value.trim().toLowerCase()
-  return LEVELS.includes(normalized as TranscriptionLevel) ? (normalized as TranscriptionLevel) : null
+  return TRANSCRIPTION_LEVELS.includes(normalized as TranscriptionLevel) ? (normalized as TranscriptionLevel) : null
 }
 
 function normalizeLanguage(value: FormDataEntryValue | null): TranscriptionLanguage | null {
@@ -214,7 +219,7 @@ function normalizeLanguage(value: FormDataEntryValue | null): TranscriptionLangu
   if (normalized === 'auto') return 'auto'
   if (normalized === 'english') return 'en'
   if (normalized === 'german' || normalized === 'deutsch') return 'de'
-  if (LANGUAGE_HINTS.includes(normalized as TranscriptionLanguage)) return normalized as TranscriptionLanguage
+  if (TRANSCRIPTION_LANGUAGE_HINTS.includes(normalized as TranscriptionLanguage)) return normalized as TranscriptionLanguage
   return null
 }
 
@@ -690,8 +695,23 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
   }
 }
 
+const transcriptionMetadataRoute = createRoute({
+  method: 'get',
+  path: '/',
+  operationId: 'getTranscriptionMetadata',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'Get transcription metadata',
+  description:
+    'Returns supported transcription levels, request Language Hint values, the default level, optional language behavior, and accepted media extensions.',
+  security: PROTECTED_BEARER_SECURITY,
+  responses: {
+    200: createJsonResponse('Supported transcription metadata.', transcriptionMetadataResponseSchema, transcriptionMetadataResponseExample),
+    401: unauthorizedErrorResponse
+  }
+})
+
 export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
-  const app = new Hono<{ Variables: AuthVariables }>()
+  const app = new OpenAPIHono<AppEnv>()
   const whisperUrl = opts.whisperUrl ?? 'http://whisper:8000'
   const whisperFetch = opts.whisperFetch ?? fetch
   const uploadDir = opts.uploadDir ?? './var/transcription-uploads'
@@ -716,21 +736,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       ? new InProcessTranscriptionWorker({ store: jobStore, whisperUrl, whisperFetch, mediaProcessor, keepMedia, asyncMaxDurationSeconds, webhookDispatcher })
       : opts.worker
 
-  app.get('/', (c) =>
-    c.json({
-      levels: [...LEVELS],
-      languages: [
-        { code: 'en', name: 'English' },
-        { code: 'de', name: 'German' }
-      ],
-      default_level: 'medium',
-      language_optional: true,
-      accepted_media: {
-        audio: [...SUPPORTED_AUDIO_EXTENSIONS],
-        video: [...SUPPORTED_VIDEO_EXTENSIONS]
-      }
-    })
-  )
+  app.openapi(transcriptionMetadataRoute, (c) => c.json(createTranscriptionMetadataResponse(), 200))
 
   app.get('/jobs', async (c) => {
     const apiToken = c.get('apiToken')

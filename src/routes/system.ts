@@ -16,7 +16,8 @@ import {
   OONA_CONTACT_TAG,
   OPENAPI_DOCUMENT_PATH,
   OPENAPI_VERSION,
-  SYSTEM_TAG
+  SYSTEM_TAG,
+  TRANSCRIPTION_TAG
 } from '../openapi'
 
 const VERSION_EXAMPLE = 'test-version'
@@ -68,7 +69,7 @@ const openApiDocumentSchema = z
     tags: z
       .array(openApiTagSchema)
       .openapi({
-        example: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG]
+        example: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG, TRANSCRIPTION_TAG]
       })
       .optional(),
     paths: z.record(z.string(), z.any()).optional(),
@@ -142,6 +143,7 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
       '/': {},
       '/api/v1/feeds': {},
       '/api/v1/oona/contact': {},
+      '/api/v1/transcription': {},
       '/health': {},
       '/version': {},
       [OPENAPI_DOCUMENT_PATH]: {},

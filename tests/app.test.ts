@@ -9,7 +9,7 @@ function createTestApp() {
 }
 
 describe('API base routes', () => {
-  test('GET /openapi.json documents public routes and protected feeds auth metadata', async () => {
+  test('GET /openapi.json documents public routes plus protected feeds and transcription auth metadata', async () => {
     const app = createTestApp()
     const res = await app.request('/openapi.json')
 
@@ -36,7 +36,8 @@ describe('API base routes', () => {
         expect.objectContaining({ name: 'System' }),
         expect.objectContaining({ name: 'API Reference' }),
         expect.objectContaining({ name: 'Oona Contact' }),
-        expect.objectContaining({ name: 'Feeds' })
+        expect.objectContaining({ name: 'Feeds' }),
+        expect.objectContaining({ name: 'Transcription' })
       ])
     )
 
@@ -44,6 +45,7 @@ describe('API base routes', () => {
       '/',
       '/api/v1/feeds',
       '/api/v1/oona/contact',
+      '/api/v1/transcription',
       '/health',
       '/openapi.json',
       '/reference',
@@ -77,11 +79,15 @@ describe('API base routes', () => {
         expect.objectContaining({ name: 'System' }),
         expect.objectContaining({ name: 'API Reference' }),
         expect.objectContaining({ name: 'Oona Contact' }),
-        expect.objectContaining({ name: 'Feeds' })
+        expect.objectContaining({ name: 'Feeds' }),
+        expect.objectContaining({ name: 'Transcription' })
       ])
     )
     expect(
       body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/feeds']
+    ).toEqual({})
+    expect(
+      body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/transcription']
     ).toEqual({})
     expect(
       body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/oona/contact']
@@ -128,6 +134,26 @@ describe('API base routes', () => {
     expect(body.paths['/api/v1/feeds'].get.responses['401'].content['application/json'].example).toEqual({
       error: 'unauthorized'
     })
+
+    const transcriptionOperation = body.paths['/api/v1/transcription'].get
+    expect(transcriptionOperation.operationId).toBe('getTranscriptionMetadata')
+    expect(transcriptionOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionMetadataResponse'
+    )
+    expect(transcriptionOperation.responses['401'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/UnauthorizedErrorResponse'
+    )
+    expect(body.components.schemas.TranscriptionMetadataResponse.properties.default_level.example).toBe('medium')
+    expect(body.components.schemas.TranscriptionMetadataResponse.properties.language_optional.example).toBe(true)
+    expect(body.components.schemas.TranscriptionMetadataResponse.properties.levels.items.enum).toEqual(['low', 'medium', 'high'])
+    expect(body.components.schemas.TranscriptionMetadataResponse.properties.languages.items.$ref).toBe(
+      '#/components/schemas/TranscriptionLanguageHintMetadata'
+    )
+    expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Detected Language')
+    expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Language Hint')
+    expect(body.components.schemas.TranscriptionLanguageHintMetadata.properties.code.enum).toEqual(['en', 'de'])
   })
 
   test('GET /reference returns public Scalar HTML pointed at the OpenAPI document', async () => {
