@@ -20,6 +20,7 @@ import {
   type SenderFetch,
   type SmtpConfig
 } from './routes/oonaContact'
+import { TRANSCRIPTION_BASE_PATH } from './routes/transcriptionContract'
 import { registerSystemRoutes } from './routes/system'
 
 export type AppConfig = {
@@ -67,7 +68,7 @@ export function createApp(config: AppConfig) {
 
   app.use('/api/v1/*', bearerTokenAuth(config.apiTokenStore))
   app.route(
-    '/api/v1/transcription',
+    TRANSCRIPTION_BASE_PATH,
     transcriptionRoutes({
       whisperUrl: config.whisperUrl,
       whisperFetch: config.whisperFetch,

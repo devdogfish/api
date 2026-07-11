@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { Scalar } from '@scalar/hono-api-reference'
 import type { AppEnv } from '../appEnv'
+import { TRANSCRIPTION_BASE_PATH, TRANSCRIPTION_JOBS_PATH, TRANSCRIPTION_WEBHOOK_EVENT_NAMES } from './transcriptionContract'
 import {
   API_DESCRIPTION,
   API_INTERNAL_NAME,
@@ -54,26 +55,32 @@ const openApiTagSchema = z.object({
   description: z.string().optional()
 })
 
-const openApiDocumentExamplePaths = {
-  '/': {},
-  '/api/v1/feeds': {},
-  '/api/v1/oona/contact': {},
-  '/api/v1/transcription': {},
-  '/api/v1/transcription/jobs': {},
-  '/api/v1/transcription/jobs/{job_id}': {},
-  '/api/v1/transcription/jobs/{job_id}/result': {},
-  '/api/v1/transcription/transcribe': {},
-  '/health': {},
-  '/version': {},
-  [OPENAPI_DOCUMENT_PATH]: {},
-  [API_REFERENCE_PATH]: {}
-} as const
+type OpenApiDocumentExampleSection = Record<string, Record<string, never>>
 
-const openApiDocumentExampleWebhooks = {
-  'transcription.job.completed': {},
-  'transcription.job.failed': {},
-  'transcription.job.cancelled': {}
-} as const
+function createOpenApiDocumentExampleSection(entries: readonly string[]) {
+  const section: OpenApiDocumentExampleSection = {}
+  for (const entry of entries) {
+    section[entry] = {}
+  }
+  return section
+}
+
+const openApiDocumentExamplePaths = createOpenApiDocumentExampleSection([
+  '/',
+  '/api/v1/feeds',
+  '/api/v1/oona/contact',
+  TRANSCRIPTION_BASE_PATH,
+  TRANSCRIPTION_JOBS_PATH,
+  `${TRANSCRIPTION_JOBS_PATH}/{job_id}`,
+  `${TRANSCRIPTION_JOBS_PATH}/{job_id}/result`,
+  `${TRANSCRIPTION_BASE_PATH}/transcribe`,
+  '/health',
+  '/version',
+  OPENAPI_DOCUMENT_PATH,
+  API_REFERENCE_PATH
+])
+
+const openApiDocumentExampleWebhooks = createOpenApiDocumentExampleSection(TRANSCRIPTION_WEBHOOK_EVENT_NAMES)
 
 const openApiComponentsSchema = z
   .object({

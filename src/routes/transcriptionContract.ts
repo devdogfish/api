@@ -3,7 +3,19 @@ import { z } from '@hono/zod-openapi'
 export const TRANSCRIPTION_LEVELS = ['low', 'medium', 'high'] as const
 export const TRANSCRIPTION_LANGUAGE_CODES = ['en', 'de'] as const
 export const TRANSCRIPTION_LANGUAGE_HINTS = ['auto', ...TRANSCRIPTION_LANGUAGE_CODES] as const
+export const TRANSCRIPTION_BASE_PATH = '/api/v1/transcription'
+export const TRANSCRIPTION_JOBS_PATH = `${TRANSCRIPTION_BASE_PATH}/jobs`
 export const TRANSCRIPTION_JOB_STATUSES = ['queued', 'processing', 'completed', 'failed', 'cancelled'] as const
+export const TRANSCRIPTION_WEBHOOK_EVENTS = {
+  completed: 'transcription.job.completed',
+  failed: 'transcription.job.failed',
+  cancelled: 'transcription.job.cancelled'
+} as const
+export const TRANSCRIPTION_WEBHOOK_EVENT_NAMES = [
+  TRANSCRIPTION_WEBHOOK_EVENTS.completed,
+  TRANSCRIPTION_WEBHOOK_EVENTS.failed,
+  TRANSCRIPTION_WEBHOOK_EVENTS.cancelled
+] as const
 export const SUPPORTED_AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'webm'] as const
 export const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'mov', 'mkv', 'webm', 'avi'] as const
 export const SUPPORTED_MEDIA_EXTENSIONS = new Set<string>([...SUPPORTED_AUDIO_EXTENSIONS, ...SUPPORTED_VIDEO_EXTENSIONS])
@@ -18,6 +30,7 @@ export type TranscriptionLevel = (typeof TRANSCRIPTION_LEVELS)[number]
 export type TranscriptionLanguageCode = (typeof TRANSCRIPTION_LANGUAGE_CODES)[number]
 export type TranscriptionLanguage = (typeof TRANSCRIPTION_LANGUAGE_HINTS)[number]
 export type TranscriptionJobStatus = (typeof TRANSCRIPTION_JOB_STATUSES)[number]
+export type TranscriptionWebhookEvent = (typeof TRANSCRIPTION_WEBHOOK_EVENT_NAMES)[number]
 
 function buildTranscriptionMetadataResponse() {
   return {
