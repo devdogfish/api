@@ -10,7 +10,7 @@ services:
         condition: service_started
     networks:
       - girke_api_internal
-      - llmwiki
+      - girke-edge
     restart: unless-stopped
 
   postgres:
@@ -50,5 +50,5 @@ volumes:
 networks:
   girke_api_internal:
     driver: bridge
-  llmwiki:
+  girke-edge:
     external: true
