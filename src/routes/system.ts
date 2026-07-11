@@ -11,6 +11,7 @@ import {
   API_TITLE,
   BEARER_SECURITY_SCHEME,
   createOpenApiDocumentConfig,
+  OONA_CONTACT_TAG,
   OPENAPI_DOCUMENT_PATH,
   OPENAPI_VERSION,
   SYSTEM_TAG
@@ -65,7 +66,7 @@ const openApiDocumentSchema = z
     tags: z
       .array(openApiTagSchema)
       .openapi({
-        example: [SYSTEM_TAG, API_REFERENCE_TAG]
+        example: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG]
       })
       .optional(),
     paths: z.record(z.string(), z.any()).optional(),
@@ -149,6 +150,7 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
     tags: openApiConfig.tags,
     paths: {
       '/': {},
+      '/api/v1/oona/contact': {},
       '/health': {},
       '/version': {},
       [OPENAPI_DOCUMENT_PATH]: {},

@@ -42,6 +42,25 @@ type OonaContactRoutesOptions = {
   mailSender?: MailSender
 }
 
+type ContactErrorCode =
+  | 'invalid_request'
+  | 'missing_mail_config'
+  | 'missing_sender_config'
+  | 'contact_delivery_failed'
+type MailDeliveryConfig = {
+  sender: MailSender
+  fromEmail: string
+  toEmail: string
+}
+type SenderSubscriptionConfig = {
+  apiToken: string
+  groupId: string
+}
+
+const contactEmailFromName = 'Oona Kokopelli Website'
+const contactEmailToName = 'Oona Kokopelli Studio'
+const contactEmailSubjectPrefix = 'Oona Kokopelli contact form'
+
 const contactRequestExample = {
   name: 'Jane Painter',
   email: 'jane@example.com',
@@ -49,10 +68,33 @@ const contactRequestExample = {
   subscribe: true
 } as const
 const contactSuccessResponse = { success: true } as const
-const invalidRequestResponse = { success: false, error: 'invalid_request' } as const
-const missingMailConfigResponse = { success: false, error: 'missing_mail_config' } as const
-const missingSenderConfigResponse = { success: false, error: 'missing_sender_config' } as const
-const contactDeliveryFailedResponse = { success: false, error: 'contact_delivery_failed' } as const
+
+function createErrorResponse<Code extends ContactErrorCode>(error: Code) {
+  return { success: false as const, error }
+}
+
+function createErrorResponseSchema<Code extends ContactErrorCode>(name: string, error: Code) {
+  return z
+    .object({
+      success: z.literal(false).openapi({ example: false }),
+      error: z.literal(error).openapi({ example: error })
+    })
+    .openapi(name)
+}
+
+function createJsonContent<TSchema>(schema: TSchema, example: unknown) {
+  return {
+    'application/json': {
+      schema,
+      example
+    }
+  }
+}
+
+const invalidRequestResponse = createErrorResponse('invalid_request')
+const missingMailConfigResponse = createErrorResponse('missing_mail_config')
+const missingSenderConfigResponse = createErrorResponse('missing_sender_config')
+const contactDeliveryFailedResponse = createErrorResponse('contact_delivery_failed')
 
 const contactSchema = z
   .object({
@@ -62,6 +104,7 @@ const contactSchema = z
     subscribe: z.boolean().openapi({ example: contactRequestExample.subscribe })
   })
   .openapi('OonaContactRequest')
+type ContactRequest = z.infer<typeof contactSchema>
 
 const contactSuccessSchema = z
   .object({
@@ -69,33 +112,22 @@ const contactSuccessSchema = z
   })
   .openapi('OonaContactSuccessResponse')
 
-const invalidRequestResponseSchema = z
-  .object({
-    success: z.literal(false).openapi({ example: false }),
-    error: z.literal('invalid_request').openapi({ example: 'invalid_request' })
-  })
-  .openapi('OonaContactInvalidRequestResponse')
+const invalidRequestResponseSchema = createErrorResponseSchema('OonaContactInvalidRequestResponse', 'invalid_request')
 
-const missingMailConfigResponseSchema = z
-  .object({
-    success: z.literal(false).openapi({ example: false }),
-    error: z.literal('missing_mail_config').openapi({ example: 'missing_mail_config' })
-  })
-  .openapi('OonaContactMissingMailConfigResponse')
+const missingMailConfigResponseSchema = createErrorResponseSchema(
+  'OonaContactMissingMailConfigResponse',
+  'missing_mail_config'
+)
 
-const missingSenderConfigResponseSchema = z
-  .object({
-    success: z.literal(false).openapi({ example: false }),
-    error: z.literal('missing_sender_config').openapi({ example: 'missing_sender_config' })
-  })
-  .openapi('OonaContactMissingSenderConfigResponse')
+const missingSenderConfigResponseSchema = createErrorResponseSchema(
+  'OonaContactMissingSenderConfigResponse',
+  'missing_sender_config'
+)
 
-const contactDeliveryFailedResponseSchema = z
-  .object({
-    success: z.literal(false).openapi({ example: false }),
-    error: z.literal('contact_delivery_failed').openapi({ example: 'contact_delivery_failed' })
-  })
-  .openapi('OonaContactDeliveryFailedResponse')
+const contactDeliveryFailedResponseSchema = createErrorResponseSchema(
+  'OonaContactDeliveryFailedResponse',
+  'contact_delivery_failed'
+)
 
 const serviceUnavailableResponseSchema = z
   .union([missingMailConfigResponseSchema, missingSenderConfigResponseSchema])
@@ -113,56 +145,53 @@ const contactRoute = createRoute({
     body: {
       required: true,
       description: 'Contact form payload.',
-      content: {
-        'application/json': {
-          schema: contactSchema,
-          example: contactRequestExample
-        }
-      }
+      content: createJsonContent(contactSchema, contactRequestExample)
     }
   },
   responses: {
     200: {
       description: 'Contact email accepted and processed.',
-      content: {
-        'application/json': {
-          schema: contactSuccessSchema,
-          example: contactSuccessResponse
-        }
-      }
+      content: createJsonContent(contactSuccessSchema, contactSuccessResponse)
     },
     400: {
       description: 'Invalid contact request payload.',
-      content: {
-        'application/json': {
-          schema: invalidRequestResponseSchema,
-          example: invalidRequestResponse
-        }
-      }
+      content: createJsonContent(invalidRequestResponseSchema, invalidRequestResponse)
     },
     502: {
       description: 'Contact delivery failed.',
-      content: {
-        'application/json': {
-          schema: contactDeliveryFailedResponseSchema,
-          example: contactDeliveryFailedResponse
-        }
-      }
+      content: createJsonContent(contactDeliveryFailedResponseSchema, contactDeliveryFailedResponse)
     },
     503: {
       description: 'Required mail or Sender configuration is missing.',
-      content: {
-        'application/json': {
-          schema: serviceUnavailableResponseSchema,
-          example: missingMailConfigResponse
-        }
-      }
+      content: createJsonContent(serviceUnavailableResponseSchema, missingMailConfigResponse)
     }
   }
 })
 
-function hasMailConfig(options: OonaContactRoutesOptions, mailSender?: MailSender) {
-  return Boolean(mailSender && options.smtp?.fromEmail && options.smtp.toEmail)
+function resolveMailDeliveryConfig(
+  options: OonaContactRoutesOptions,
+  mailSender?: MailSender
+): MailDeliveryConfig | null {
+  if (!mailSender || !options.smtp?.fromEmail || !options.smtp.toEmail) {
+    return null
+  }
+
+  return {
+    sender: mailSender,
+    fromEmail: options.smtp.fromEmail,
+    toEmail: options.smtp.toEmail
+  }
+}
+
+function resolveSenderSubscriptionConfig(sender?: SenderConfig): SenderSubscriptionConfig | null {
+  if (!sender?.apiToken || !sender.groupId) {
+    return null
+  }
+
+  return {
+    apiToken: sender.apiToken,
+    groupId: sender.groupId
+  }
 }
 
 function isMalformedJsonError(err: unknown) {
@@ -178,6 +207,18 @@ function escapeHtml(value: string) {
     .replaceAll("'", '&#039;')
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function getSenderErrorMessage(payload: unknown) {
+  if (isRecord(payload) && typeof payload.message === 'string') {
+    return payload.message
+  }
+
+  return 'unknown_sender_error'
+}
+
 async function callSender(senderFetch: SenderFetch, token: string, path: string, body: unknown) {
   const res = await senderFetch(`${senderBaseUrl}${path}`, {
     method: 'POST',
@@ -189,19 +230,76 @@ async function callSender(senderFetch: SenderFetch, token: string, path: string,
     body: JSON.stringify(body)
   })
 
-  let payload: any = null
+  let payload: unknown = null
   try {
     payload = await res.json()
   } catch {
     payload = null
   }
 
-  if (!res.ok || payload?.success === false) {
-    const message = typeof payload?.message === 'string' ? payload.message : 'unknown_sender_error'
-    throw new Error(`Sender request failed: ${res.status}: ${message}`)
+  if (!res.ok || (isRecord(payload) && payload.success === false)) {
+    throw new Error(`Sender request failed: ${res.status}: ${getSenderErrorMessage(payload)}`)
   }
 
   return payload
+}
+
+function createContactEmailContent(contact: ContactRequest) {
+  const newsletterOptIn = contact.subscribe ? 'yes' : 'no'
+  const text = [
+    `New Oona Kokopelli contact form message`,
+    ``,
+    `From: ${contact.name} <${contact.email}>`,
+    `Newsletter opt-in: ${newsletterOptIn}`,
+    ``,
+    contact.message
+  ].join('\n')
+
+  const html = `
+      <p><strong>New Oona Kokopelli contact form message</strong></p>
+      <p><strong>From:</strong> ${escapeHtml(contact.name)} &lt;${escapeHtml(contact.email)}&gt;</p>
+      <p><strong>Newsletter opt-in:</strong> ${newsletterOptIn}</p>
+      <p><strong>Message:</strong></p>
+      <p>${escapeHtml(contact.message).replaceAll('\n', '<br>')}</p>
+    `
+
+  return { text, html }
+}
+
+async function sendContactEmail(mailDelivery: MailDeliveryConfig, contact: ContactRequest) {
+  const { text, html } = createContactEmailContent(contact)
+
+  await mailDelivery.sender({
+    from: { email: mailDelivery.fromEmail, name: contactEmailFromName },
+    to: { email: mailDelivery.toEmail, name: contactEmailToName },
+    subject: `${contactEmailSubjectPrefix}: ${contact.name}`,
+    text,
+    html,
+    replyTo: contact.email
+  })
+}
+
+async function subscribeContact(
+  senderFetch: SenderFetch,
+  senderSubscription: SenderSubscriptionConfig,
+  contact: ContactRequest
+) {
+  await callSender(senderFetch, senderSubscription.apiToken, '/subscribers', {
+    email: contact.email,
+    firstname: contact.name,
+    groups: [senderSubscription.groupId],
+    trigger_automation: false
+  })
+}
+
+function logContactDeliveryFailure(err: unknown) {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      msg: 'contact_delivery_failed',
+      error: err instanceof Error ? err.message : String(err)
+    })
+  )
 }
 
 function createSmtpMailSender(smtp: SmtpConfig): MailSender {
@@ -231,6 +329,8 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
   const app = new OpenAPIHono<AppEnv>()
   const senderFetch = options.senderFetch ?? fetch
   const mailSender = options.mailSender ?? (options.smtp ? createSmtpMailSender(options.smtp) : undefined)
+  const mailDelivery = resolveMailDeliveryConfig(options, mailSender)
+  const senderSubscription = resolveSenderSubscriptionConfig(options.sender)
 
   app.use(
     '*',
@@ -256,7 +356,7 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
       ...contactRoute,
       middleware: [
         async (c, next) => {
-          if (!hasMailConfig(options, mailSender)) {
+          if (!mailDelivery) {
             return c.json(missingMailConfigResponse, 503)
           }
 
@@ -265,52 +365,24 @@ export function oonaContactRoutes(options: OonaContactRoutesOptions = {}) {
       ]
     },
     async (c) => {
-      if (!mailSender || !options.smtp?.fromEmail || !options.smtp.toEmail) {
+      if (!mailDelivery) {
         return c.json(missingMailConfigResponse, 503)
       }
 
-      const { name, email, message, subscribe } = c.req.valid('json')
-      const text = [
-        `New Oona Kokopelli contact form message`,
-        ``,
-        `From: ${name} <${email}>`,
-        `Newsletter opt-in: ${subscribe ? 'yes' : 'no'}`,
-        ``,
-        message
-      ].join('\n')
-
-      const html = `
-        <p><strong>New Oona Kokopelli contact form message</strong></p>
-        <p><strong>From:</strong> ${escapeHtml(name)} &lt;${escapeHtml(email)}&gt;</p>
-        <p><strong>Newsletter opt-in:</strong> ${subscribe ? 'yes' : 'no'}</p>
-        <p><strong>Message:</strong></p>
-        <p>${escapeHtml(message).replaceAll('\n', '<br>')}</p>
-      `
+      const contact = c.req.valid('json')
 
       try {
-        await mailSender({
-          from: { email: options.smtp.fromEmail, name: 'Oona Kokopelli Website' },
-          to: { email: options.smtp.toEmail, name: 'Oona Kokopelli Studio' },
-          subject: `Oona Kokopelli contact form: ${name}`,
-          text,
-          html,
-          replyTo: email
-        })
+        await sendContactEmail(mailDelivery, contact)
 
-        if (subscribe) {
-          if (!options.sender?.apiToken || !options.sender.groupId) {
+        if (contact.subscribe) {
+          if (!senderSubscription) {
             return c.json(missingSenderConfigResponse, 503)
           }
 
-          await callSender(senderFetch, options.sender.apiToken, '/subscribers', {
-            email,
-            firstname: name,
-            groups: [options.sender.groupId],
-            trigger_automation: false
-          })
+          await subscribeContact(senderFetch, senderSubscription, contact)
         }
       } catch (err) {
-        console.error(JSON.stringify({ level: 'error', msg: 'contact_delivery_failed', error: err instanceof Error ? err.message : String(err) }))
+        logContactDeliveryFailure(err)
         return c.json(contactDeliveryFailedResponse, 502)
       }
 

@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { createApp } from '../src/app'
+import { createApp, type AppConfig } from '../src/app'
 import type { MailSender, SenderFetch } from '../src/routes/oonaContact'
 import { testApiTokenStore } from './helpers'
 
+const TEST_VERSION = 'test-version'
 const senderConfig = {
   apiToken: 'sender-token',
   groupId: 'group-123'
@@ -18,9 +19,36 @@ const smtpConfig = {
   toEmail: 'studio@oonakokopelli.com'
 }
 
+const validContactRequest = {
+  name: 'Jane Painter',
+  email: 'jane@example.com',
+  message: 'I love this work. Can I buy a print?',
+  subscribe: true
+} as const
+
+type ContactTestConfig = Omit<Partial<AppConfig>, 'apiTokenStore' | 'version'>
+type SenderCall = {
+  url: string
+  body: unknown
+  authorization: string | null
+}
+type ContactMessage = Parameters<MailSender>[0]
+
+function createTestApp(config: ContactTestConfig = {}) {
+  return createApp({
+    apiTokenStore: testApiTokenStore(),
+    version: TEST_VERSION,
+    ...config
+  })
+}
+
+function parseJsonBody(body: RequestInit['body']): unknown {
+  return JSON.parse(String(body))
+}
+
 describe('Oona Kokopelli contact form proxy', () => {
   test('allows Carrd landing page origin in CORS preflight', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', sender: senderConfig, smtp: smtpConfig })
+    const app = createTestApp({ sender: senderConfig, smtp: smtpConfig })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'OPTIONS',
@@ -35,12 +63,12 @@ describe('Oona Kokopelli contact form proxy', () => {
   })
 
   test('sends contact email through SMTP and subscribes opted-in visitors through Sender', async () => {
-    const senderCalls: Array<{ url: string; body: any; authorization: string | null }> = []
-    const smtpMessages: Array<any> = []
+    const senderCalls: SenderCall[] = []
+    const smtpMessages: ContactMessage[] = []
     const senderFetch: SenderFetch = async (url, init) => {
       senderCalls.push({
         url: String(url),
-        body: JSON.parse(String(init?.body)),
+        body: parseJsonBody(init?.body),
         authorization: new Headers(init?.headers).get('Authorization')
       })
       return Response.json({ success: true })
@@ -48,7 +76,7 @@ describe('Oona Kokopelli contact form proxy', () => {
     const mailSender: MailSender = async (message) => {
       smtpMessages.push(message)
     }
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', sender: senderConfig, senderFetch, smtp: smtpConfig, mailSender })
+    const app = createTestApp({ sender: senderConfig, senderFetch, smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -56,12 +84,7 @@ describe('Oona Kokopelli contact form proxy', () => {
         Origin: 'https://gallery.oonakokopelli.com',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        name: 'Jane Painter',
-        email: 'jane@example.com',
-        message: 'I love this work. Can I buy a print?',
-        subscribe: true
-      })
+      body: JSON.stringify(validContactRequest)
     })
 
     expect(res.status).toBe(200)
@@ -87,16 +110,16 @@ describe('Oona Kokopelli contact form proxy', () => {
   })
 
   test('does not subscribe visitors who do not opt in', async () => {
-    const senderCalls: Array<{ url: string; body: any }> = []
-    const smtpMessages: Array<any> = []
+    const senderCalls: Array<Omit<SenderCall, 'authorization'>> = []
+    const smtpMessages: ContactMessage[] = []
     const senderFetch: SenderFetch = async (url, init) => {
-      senderCalls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      senderCalls.push({ url: String(url), body: parseJsonBody(init?.body) })
       return Response.json({ success: true })
     }
     const mailSender: MailSender = async (message) => {
       smtpMessages.push(message)
     }
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', sender: senderConfig, senderFetch, smtp: smtpConfig, mailSender })
+    const app = createTestApp({ sender: senderConfig, senderFetch, smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -111,7 +134,7 @@ describe('Oona Kokopelli contact form proxy', () => {
   })
 
   test('returns a safe error for invalid payloads', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', sender: senderConfig, smtp: smtpConfig })
+    const app = createTestApp({ sender: senderConfig, smtp: smtpConfig })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -123,8 +146,21 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(await res.json()).toEqual({ success: false, error: 'invalid_request' })
   })
 
+  test('returns a safe error for malformed JSON bodies', async () => {
+    const app = createTestApp({ sender: senderConfig, smtp: smtpConfig })
+
+    const res = await app.request('/api/v1/oona/contact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"name":'
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ success: false, error: 'invalid_request' })
+  })
+
   test('returns a safe error when mail configuration is missing', async () => {
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+    const app = createTestApp()
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -137,11 +173,11 @@ describe('Oona Kokopelli contact form proxy', () => {
   })
 
   test('returns a safe error when Sender configuration is missing for opt-in requests', async () => {
-    const smtpMessages: Array<any> = []
+    const smtpMessages: ContactMessage[] = []
     const mailSender: MailSender = async (message) => {
       smtpMessages.push(message)
     }
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', smtp: smtpConfig, mailSender })
+    const app = createTestApp({ smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',
@@ -158,7 +194,7 @@ describe('Oona Kokopelli contact form proxy', () => {
     const mailSender: MailSender = async () => {
       throw new Error('smtp blocked')
     }
-    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', sender: senderConfig, smtp: smtpConfig, mailSender })
+    const app = createTestApp({ sender: senderConfig, smtp: smtpConfig, mailSender })
 
     const res = await app.request('/api/v1/oona/contact', {
       method: 'POST',

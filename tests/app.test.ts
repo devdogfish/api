@@ -66,6 +66,16 @@ describe('API base routes', () => {
 
     expect(body.paths['/openapi.json'].get.operationId).toBe('getOpenApiDocument')
     expect(body.paths['/openapi.json'].get.tags).toEqual(['API Reference'])
+    expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'System' }),
+        expect.objectContaining({ name: 'API Reference' }),
+        expect.objectContaining({ name: 'Oona Contact' })
+      ])
+    )
+    expect(
+      body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/oona/contact']
+    ).toEqual({})
     expect(body.paths['/reference'].get.operationId).toBe('getApiReference')
     expect(body.paths['/reference'].get.responses['200'].content['text/html'].schema.$ref).toBe(
       '#/components/schemas/ScalarHtmlDocument'
