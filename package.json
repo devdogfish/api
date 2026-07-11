@@ -17,6 +17,8 @@
   "dependencies": {
     "@ai-hero/sandcastle": "^0.12.0",
     "@hono/node-server": "latest",
+    "@hono/zod-openapi": "^1.4.0",
+    "@scalar/hono-api-reference": "^0.11.9",
     "drizzle-orm": "latest",
     "hono": "latest",
     "nodemailer": "^8.0.11",

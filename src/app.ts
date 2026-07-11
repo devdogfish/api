@@ -1,12 +1,14 @@
-import { Hono } from 'hono'
+import { OpenAPIHono } from '@hono/zod-openapi'
 import { bodyLimit } from 'hono/body-limit'
 import { requestLogger } from './middleware/logger'
-import { bearerTokenAuth, type ApiTokenStore, type AuthVariables } from './middleware/auth'
+import { bearerTokenAuth, type ApiTokenStore } from './middleware/auth'
+import type { AppEnv } from './appEnv'
 import { transcriptionRoutes } from './routes/transcription'
 import type { TranscriptionFetch, TranscriptionJobStore, TranscriptionWebhookFetch, TranscriptionWorker } from './routes/transcription'
 import type { TranscriptionDurationProbe, TranscriptionMediaProcessor } from './transcription/mediaProcessor'
 import { feedRoutes } from './routes/feeds'
 import { oonaContactRoutes, type MailSender, type SenderConfig, type SenderFetch, type SmtpConfig } from './routes/oonaContact'
+import { registerSystemRoutes } from './routes/system'
 
 export type AppConfig = {
   apiTokenStore: ApiTokenStore
@@ -34,14 +36,12 @@ export type AppConfig = {
 }
 
 export function createApp(config: AppConfig) {
-  const app = new Hono<{ Variables: AuthVariables }>()
+  const app = new OpenAPIHono<AppEnv>()
 
   app.use('*', requestLogger())
   app.use('*', bodyLimit({ maxSize: 2 * 1024 * 1024 * 1024 }))
 
-  app.get('/', (c) => c.json({ name: 'api', internal: 'girke-api', version: config.version }))
-  app.get('/health', (c) => c.json({ ok: true }))
-  app.get('/version', (c) => c.json({ version: config.version }))
+  registerSystemRoutes(app, config.version)
 
   app.route('/api/v1/oona/contact', oonaContactRoutes({ sender: config.sender, senderFetch: config.senderFetch, smtp: config.smtp, mailSender: config.mailSender }))
 
