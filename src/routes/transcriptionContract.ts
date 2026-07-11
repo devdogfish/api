@@ -19,18 +19,7 @@ export type TranscriptionLanguageCode = (typeof TRANSCRIPTION_LANGUAGE_CODES)[nu
 export type TranscriptionLanguage = (typeof TRANSCRIPTION_LANGUAGE_HINTS)[number]
 export type TranscriptionJobStatus = (typeof TRANSCRIPTION_JOB_STATUSES)[number]
 
-export const transcriptionMetadataResponseExample = {
-  levels: [...TRANSCRIPTION_LEVELS],
-  languages: [...TRANSCRIPTION_LANGUAGE_HINT_METADATA],
-  default_level: DEFAULT_TRANSCRIPTION_LEVEL,
-  language_optional: TRANSCRIPTION_LANGUAGE_OPTIONAL,
-  accepted_media: {
-    audio: [...SUPPORTED_AUDIO_EXTENSIONS],
-    video: [...SUPPORTED_VIDEO_EXTENSIONS]
-  }
-} as const
-
-export function createTranscriptionMetadataResponse() {
+function buildTranscriptionMetadataResponse() {
   return {
     levels: [...TRANSCRIPTION_LEVELS],
     languages: TRANSCRIPTION_LANGUAGE_HINT_METADATA.map((language) => ({ ...language })),
@@ -41,6 +30,12 @@ export function createTranscriptionMetadataResponse() {
       video: [...SUPPORTED_VIDEO_EXTENSIONS]
     }
   }
+}
+
+export const transcriptionMetadataResponseExample = buildTranscriptionMetadataResponse()
+
+export function createTranscriptionMetadataResponse() {
+  return buildTranscriptionMetadataResponse()
 }
 
 export const transcriptionLanguageHintMetadataSchema = z

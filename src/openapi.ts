@@ -29,6 +29,7 @@ export const TRANSCRIPTION_TAG = {
   name: 'Transcription',
   description: 'Protected transcription capability routes.'
 } as const
+export const OPENAPI_TAGS = [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG, TRANSCRIPTION_TAG] as const
 export const PROTECTED_BEARER_SECURITY = [{ [BEARER_SECURITY_SCHEME]: [] as string[] }]
 export const UNAUTHORIZED_ERROR_BODY = { error: 'unauthorized' } as const
 
@@ -68,7 +69,7 @@ export function createOpenApiDocumentConfig(version: string) {
       version,
       description: API_DESCRIPTION
     },
-    tags: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG, TRANSCRIPTION_TAG],
+    tags: [...OPENAPI_TAGS],
     components: {
       securitySchemes: {
         [BEARER_SECURITY_SCHEME]: {

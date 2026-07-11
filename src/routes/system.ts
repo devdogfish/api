@@ -12,12 +12,10 @@ import {
   BEARER_SECURITY_SCHEME,
   createJsonResponse,
   createOpenApiDocumentConfig,
-  FEEDS_TAG,
-  OONA_CONTACT_TAG,
+  OPENAPI_TAGS,
   OPENAPI_DOCUMENT_PATH,
   OPENAPI_VERSION,
-  SYSTEM_TAG,
-  TRANSCRIPTION_TAG
+  SYSTEM_TAG
 } from '../openapi'
 
 const VERSION_EXAMPLE = 'test-version'
@@ -56,6 +54,17 @@ const openApiTagSchema = z.object({
   description: z.string().optional()
 })
 
+const openApiDocumentExamplePaths = {
+  '/': {},
+  '/api/v1/feeds': {},
+  '/api/v1/oona/contact': {},
+  '/api/v1/transcription': {},
+  '/health': {},
+  '/version': {},
+  [OPENAPI_DOCUMENT_PATH]: {},
+  [API_REFERENCE_PATH]: {}
+} as const
+
 const openApiComponentsSchema = z
   .object({
     securitySchemes: z.record(z.string(), z.any()).optional()
@@ -69,7 +78,7 @@ const openApiDocumentSchema = z
     tags: z
       .array(openApiTagSchema)
       .openapi({
-        example: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG, TRANSCRIPTION_TAG]
+        example: OPENAPI_TAGS
       })
       .optional(),
     paths: z.record(z.string(), z.any()).optional(),
@@ -139,16 +148,7 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
     openapi: OPENAPI_VERSION,
     info: openApiConfig.info,
     tags: openApiConfig.tags,
-    paths: {
-      '/': {},
-      '/api/v1/feeds': {},
-      '/api/v1/oona/contact': {},
-      '/api/v1/transcription': {},
-      '/health': {},
-      '/version': {},
-      [OPENAPI_DOCUMENT_PATH]: {},
-      [API_REFERENCE_PATH]: {}
-    },
+    paths: openApiDocumentExamplePaths,
     components: openApiConfig.components
   }
 

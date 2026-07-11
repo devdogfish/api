@@ -3,6 +3,23 @@ import { createApp } from '../src/app'
 import { authHeaders, testApiTokenStore } from './helpers'
 
 const TEST_VERSION = 'test-version'
+const expectedOpenApiTags = expect.arrayContaining([
+  expect.objectContaining({ name: 'System' }),
+  expect.objectContaining({ name: 'API Reference' }),
+  expect.objectContaining({ name: 'Oona Contact' }),
+  expect.objectContaining({ name: 'Feeds' }),
+  expect.objectContaining({ name: 'Transcription' })
+])
+const expectedOpenApiPaths = [
+  '/',
+  '/api/v1/feeds',
+  '/api/v1/oona/contact',
+  '/api/v1/transcription',
+  '/health',
+  '/openapi.json',
+  '/reference',
+  '/version'
+]
 
 function createTestApp() {
   return createApp({ apiTokenStore: testApiTokenStore(), version: TEST_VERSION })
@@ -31,26 +48,9 @@ describe('API base routes', () => {
       }
     })
 
-    expect(body.tags).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'System' }),
-        expect.objectContaining({ name: 'API Reference' }),
-        expect.objectContaining({ name: 'Oona Contact' }),
-        expect.objectContaining({ name: 'Feeds' }),
-        expect.objectContaining({ name: 'Transcription' })
-      ])
-    )
+    expect(body.tags).toEqual(expectedOpenApiTags)
 
-    expect(Object.keys(body.paths).sort()).toEqual([
-      '/',
-      '/api/v1/feeds',
-      '/api/v1/oona/contact',
-      '/api/v1/transcription',
-      '/health',
-      '/openapi.json',
-      '/reference',
-      '/version'
-    ])
+    expect(Object.keys(body.paths).sort()).toEqual(expectedOpenApiPaths)
 
     expect(body.paths['/'].get.operationId).toBe('getApiRoot')
     expect(body.paths['/'].get.tags).toEqual(['System'])
@@ -74,15 +74,7 @@ describe('API base routes', () => {
     expect(body.paths['/openapi.json'].get.operationId).toBe('getOpenApiDocument')
     expect(body.paths['/openapi.json'].get.tags).toEqual(['API Reference'])
     expect(body.paths['/openapi.json'].get.security).toBeUndefined()
-    expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.tags).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'System' }),
-        expect.objectContaining({ name: 'API Reference' }),
-        expect.objectContaining({ name: 'Oona Contact' }),
-        expect.objectContaining({ name: 'Feeds' }),
-        expect.objectContaining({ name: 'Transcription' })
-      ])
-    )
+    expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.tags).toEqual(expectedOpenApiTags)
     expect(
       body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/feeds']
     ).toEqual({})
@@ -189,6 +181,10 @@ describe('API base routes', () => {
     expect(missingFeeds.status).toBe(401)
     expect(await missingFeeds.json()).toEqual({ error: 'unauthorized' })
 
+    const missingTranscriptionMetadata = await app.request('/api/v1/transcription')
+    expect(missingTranscriptionMetadata.status).toBe(401)
+    expect(await missingTranscriptionMetadata.json()).toEqual({ error: 'unauthorized' })
+
     const legacyFeeds = await app.request('/api/v1/feeds', {
       headers: { 'X-API-Key': 'girke_valid' }
     })
@@ -206,6 +202,11 @@ describe('API base routes', () => {
     })
     expect(validFeeds.status).toBe(200)
     expect(await validFeeds.json()).toEqual({ feeds: [] })
+
+    const validTranscriptionMetadata = await app.request('/api/v1/transcription', {
+      headers: authHeaders
+    })
+    expect(validTranscriptionMetadata.status).toBe(200)
 
     const missingTranscriptionJobs = await app.request('/api/v1/transcription/jobs')
     expect(missingTranscriptionJobs.status).toBe(401)
