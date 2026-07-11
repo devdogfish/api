@@ -1024,6 +1024,42 @@ describe('transcription capability', () => {
     }
   })
 
+  test('treats result and cancellation lookups from other API tokens as not found', async () => {
+    const uploadDir = await makeUploadDir()
+    const tokenStore = {
+      async findActiveByToken(token: string) {
+        if (token === 'girke_a') return { id: 1, name: 'a' }
+        if (token === 'girke_b') return { id: 2, name: 'b' }
+        return null
+      }
+    }
+    const app = createApp({ apiTokenStore: tokenStore, version: 'test-version', transcriptionUploadDir: uploadDir, transcriptionWorker: null })
+
+    try {
+      const created = await app.request('/api/v1/transcription/jobs', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer girke_a' },
+        body: makeForm()
+      })
+      const createdBody = await created.json()
+
+      const otherResult = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}/result`, {
+        headers: { Authorization: 'Bearer girke_b' }
+      })
+      const otherCancel = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer girke_b' }
+      })
+
+      expect(otherResult.status).toBe(404)
+      expect(await otherResult.json()).toEqual({ error: 'not_found' })
+      expect(otherCancel.status).toBe(404)
+      expect(await otherCancel.json()).toEqual({ error: 'not_found' })
+    } finally {
+      await rm(uploadDir, { recursive: true, force: true })
+    }
+  })
+
   test('lists only jobs owned by the calling API token', async () => {
     const uploadDir = await makeUploadDir()
     const tokenStore = {
@@ -1142,6 +1178,100 @@ describe('transcription capability', () => {
       const cancelledResult = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}/result`, { headers: authHeaders })
       expect(cancelledResult.status).toBe(410)
       expect(await cancelledResult.json()).toEqual({ error: 'job_cancelled' })
+    } finally {
+      await rm(uploadDir, { recursive: true, force: true })
+    }
+  })
+
+  test('returns an idempotent cancelled response when cancelling the same queued job twice', async () => {
+    const uploadDir = await makeUploadDir()
+    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', transcriptionUploadDir: uploadDir, transcriptionWorker: null })
+
+    try {
+      const created = await app.request('/api/v1/transcription/jobs', {
+        method: 'POST',
+        headers: authHeaders,
+        body: makeForm()
+      })
+      const createdBody = await created.json()
+
+      const firstCancel = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, {
+        method: 'DELETE',
+        headers: authHeaders
+      })
+      const secondCancel = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, {
+        method: 'DELETE',
+        headers: authHeaders
+      })
+
+      expect(firstCancel.status).toBe(200)
+      expect(await firstCancel.json()).toMatchObject({
+        status: 'cancelled',
+        error: {
+          code: 'JOB_CANCELLED',
+          message: 'Job cancelled'
+        }
+      })
+      expect(secondCancel.status).toBe(200)
+      expect(await secondCancel.json()).toMatchObject({
+        status: 'cancelled',
+        error: {
+          code: 'JOB_CANCELLED',
+          message: 'Job cancelled'
+        }
+      })
+    } finally {
+      await rm(uploadDir, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects cancellation for completed jobs', async () => {
+    const uploadDir = await makeUploadDir()
+    const whisperFetch: TranscriptionFetch = async () =>
+      Response.json({
+        text: 'done',
+        segments: [{ start: 0, end: 0.5, text: 'done' }],
+        duration_seconds: 0.5,
+        processing_seconds: 0.2,
+        level: 'medium',
+        language: 'auto',
+        detected_language: 'en',
+        model: 'mock'
+      })
+    const app = createApp({
+      apiTokenStore: testApiTokenStore(),
+      version: 'test-version',
+      whisperFetch,
+      transcriptionUploadDir: uploadDir,
+      transcriptionMediaProcessor: singleChunkMediaProcessor(uploadDir, 0.5)
+    })
+
+    try {
+      const created = await app.request('/api/v1/transcription/jobs', {
+        method: 'POST',
+        headers: authHeaders,
+        body: makeForm()
+      })
+      const createdBody = await created.json()
+
+      await waitFor(
+        async () => {
+          const res = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, { headers: authHeaders })
+          return res.json()
+        },
+        (body: any) => body.status === 'completed'
+      )
+
+      const cancel = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, {
+        method: 'DELETE',
+        headers: authHeaders
+      })
+
+      expect(cancel.status).toBe(409)
+      expect(await cancel.json()).toEqual({
+        error: 'job_already_terminal',
+        status: 'completed'
+      })
     } finally {
       await rm(uploadDir, { recursive: true, force: true })
     }

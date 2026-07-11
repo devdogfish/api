@@ -16,6 +16,8 @@ const expectedOpenApiPaths = [
   '/api/v1/oona/contact',
   '/api/v1/transcription',
   '/api/v1/transcription/jobs',
+  '/api/v1/transcription/jobs/{job_id}',
+  '/api/v1/transcription/jobs/{job_id}/result',
   '/api/v1/transcription/transcribe',
   '/health',
   '/openapi.json',
@@ -229,6 +231,71 @@ describe('API base routes', () => {
     expect(body.components.schemas.TranscriptionJobCreateRequest.properties.level.enum).toEqual(['low', 'medium', 'high'])
     expect(body.components.schemas.TranscriptionJobCreateRequest.properties.language.enum).toEqual(['auto', 'en', 'de'])
     expect(body.components.schemas.TranscriptionJobCreateRequest.properties.webhook_url.format).toBe('uri')
+
+    const transcriptionJobStatusOperation = body.paths['/api/v1/transcription/jobs/{job_id}'].get
+    expect(transcriptionJobStatusOperation.operationId).toBe('getTranscriptionJob')
+    expect(transcriptionJobStatusOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionJobStatusOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobStatusOperation.parameters).toEqual([
+      expect.objectContaining({
+        name: 'job_id',
+        in: 'path',
+        required: true,
+        schema: expect.objectContaining({ type: 'string', example: 'tr_01jzexample' })
+      })
+    ])
+    expect(Object.keys(transcriptionJobStatusOperation.responses).sort()).toEqual(['200', '401', '404'])
+    expect(transcriptionJobStatusOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobStatusResponse'
+    )
+    expect(transcriptionJobStatusOperation.responses['404'].content['application/json'].example).toEqual({ error: 'not_found' })
+
+    const transcriptionJobResultOperation = body.paths['/api/v1/transcription/jobs/{job_id}/result'].get
+    expect(transcriptionJobResultOperation.operationId).toBe('getTranscriptionJobResult')
+    expect(transcriptionJobResultOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionJobResultOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobResultOperation.parameters).toEqual([
+      expect.objectContaining({
+        name: 'job_id',
+        in: 'path',
+        required: true,
+        schema: expect.objectContaining({ type: 'string', example: 'tr_01jzexample' })
+      })
+    ])
+    expect(Object.keys(transcriptionJobResultOperation.responses).sort()).toEqual(['200', '401', '404', '409', '410', '422', '500'])
+    expect(transcriptionJobResultOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobResultResponse'
+    )
+    expect(transcriptionJobResultOperation.responses['409'].content['application/json'].example).toEqual({
+      error: 'job_not_completed',
+      status: 'queued'
+    })
+    expect(transcriptionJobResultOperation.responses['410'].content['application/json'].example).toEqual({ error: 'job_cancelled' })
+    expect(transcriptionJobResultOperation.responses['422'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobResultFailedResponse'
+    )
+    expect(transcriptionJobResultOperation.responses['500'].content['application/json'].example).toEqual({ error: 'job_result_missing' })
+
+    const transcriptionJobCancelOperation = body.paths['/api/v1/transcription/jobs/{job_id}'].delete
+    expect(transcriptionJobCancelOperation.operationId).toBe('cancelTranscriptionJob')
+    expect(transcriptionJobCancelOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionJobCancelOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobCancelOperation.parameters).toEqual([
+      expect.objectContaining({
+        name: 'job_id',
+        in: 'path',
+        required: true,
+        schema: expect.objectContaining({ type: 'string', example: 'tr_01jzexample' })
+      })
+    ])
+    expect(Object.keys(transcriptionJobCancelOperation.responses).sort()).toEqual(['200', '401', '404', '409'])
+    expect(transcriptionJobCancelOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobCancellationResponse'
+    )
+    expect(transcriptionJobCancelOperation.responses['409'].content['application/json'].example).toEqual({
+      error: 'job_already_terminal',
+      status: 'completed'
+    })
   })
 
   test('GET /reference returns public Scalar HTML pointed at the OpenAPI document', async () => {

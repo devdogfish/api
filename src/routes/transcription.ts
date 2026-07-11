@@ -121,9 +121,16 @@ export type TranscriptionSegment = {
   chunk_index?: number
 }
 
+export type TranscriptionResultSegment = {
+  start: number
+  end: number
+  text: string
+  chunk_index: number
+}
+
 export type TranscriptionResult = {
   text: string
-  segments: TranscriptionSegment[]
+  segments: TranscriptionResultSegment[]
   duration_seconds: number
   processing_seconds: number
   level: TranscriptionLevel
@@ -168,7 +175,7 @@ export type TranscriptionChunkRecord = {
   endSeconds: number
   status: 'completed' | 'failed'
   text: string | null
-  segmentsJson: TranscriptionSegment[] | null
+  segmentsJson: TranscriptionResultSegment[] | null
   processingSeconds: number | null
   errorMessage: string | null
 }
@@ -315,6 +322,9 @@ function jobUrls(publicId: string) {
 type TranscriptionJobSummaryResponse = z.infer<typeof transcriptionJobSummarySchema>
 type TranscriptionJobListResponse = z.infer<typeof transcriptionJobListResponseSchema>
 type TranscriptionJobCreateAcceptedResponse = z.infer<typeof transcriptionJobCreateAcceptedResponseSchema>
+type TranscriptionJobStatusResponse = z.infer<typeof transcriptionJobStatusResponseSchema>
+type TranscriptionJobCancellationResponse = z.infer<typeof transcriptionJobCancellationResponseSchema>
+type TranscriptionJobResultResponse = z.infer<typeof transcriptionJobResultResponseSchema>
 
 function normalizeMultipartField<T>(value: unknown, normalize: (value: FormDataEntryValue | null) => T | null) {
   const normalized = normalize((value as FormDataEntryValue | undefined) ?? null)
@@ -422,11 +432,19 @@ function serializeCreatedJob(job: TranscriptionJobRecord): TranscriptionJobCreat
   }
 }
 
-function serializeResult(job: TranscriptionJobRecord) {
-  if (!job.resultJson) return null
+function serializeJobStatus(job: TranscriptionJobRecord): TranscriptionJobStatusResponse {
+  return serializeJob(job) as TranscriptionJobStatusResponse
+}
+
+function serializeCancelledJob(job: TranscriptionJobRecord): TranscriptionJobCancellationResponse {
+  return serializeJob(job) as TranscriptionJobCancellationResponse
+}
+
+function serializeResult(job: TranscriptionJobRecord): TranscriptionJobResultResponse | null {
+  if (job.status !== 'completed' || !job.resultJson) return null
   return {
     job_id: job.publicId,
-    status: job.status,
+    status: 'completed',
     ...job.resultJson
   }
 }
@@ -712,7 +730,7 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
   }
 
   private stitchChunks(chunks: TranscriptionChunkRecord[]) {
-    const segments: TranscriptionSegment[] = []
+    const segments: TranscriptionResultSegment[] = []
     let lastEnd = 0
     for (const chunk of chunks) {
       for (const segment of chunk.segmentsJson ?? []) {
@@ -1214,6 +1232,338 @@ function getTranscriptionJobCreateBadRequestBody(issues: z.ZodIssue[]): Transcri
   return getMultipartFieldErrorBody(issues, transcriptionJobCreateBadRequestFieldOrder, transcriptionJobCreateBadRequestBodies)
 }
 
+const transcriptionJobIdParamsSchema = z
+  .object({
+    job_id: z.string().openapi({
+      param: {
+        name: 'job_id',
+        in: 'path'
+      },
+      example: transcriptionJobIdExample,
+      description: 'Public Transcription Job identifier.'
+    })
+  })
+  .openapi('TranscriptionJobParams')
+
+const transcriptionJobStatusCommonSchema = transcriptionJobSummarySchema.pick({
+  job_id: true,
+  progress: true,
+  level: true,
+  language: true,
+  detected_language: true,
+  created_at: true,
+  updated_at: true
+})
+
+const transcriptionJobProcessingExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'processing',
+  progress: 0.42,
+  level: 'high',
+  language: 'en',
+  detected_language: 'en',
+  created_at: transcriptionDateTimeExample,
+  updated_at: '2026-07-11T00:06:00.000Z',
+  current_chunk: 14,
+  total_chunks: 33,
+  duration_seconds: 1980.5,
+  processing_seconds_elapsed: 732.1,
+  model: 'large-v3-turbo',
+  started_at: '2026-07-11T00:01:00.000Z'
+} as const
+
+const transcriptionJobCompletedExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'completed',
+  progress: 1,
+  level: 'high',
+  language: 'en',
+  detected_language: 'en',
+  created_at: transcriptionDateTimeExample,
+  updated_at: '2026-07-11T01:01:37.000Z',
+  current_chunk: 33,
+  total_chunks: 33,
+  duration_seconds: 1980.5,
+  processing_seconds: 3637.2,
+  model: 'large-v3-turbo',
+  started_at: '2026-07-11T00:01:00.000Z',
+  completed_at: '2026-07-11T01:01:37.000Z',
+  result_url: transcriptionJobResultUrlExample
+} as const
+
+const transcriptionJobFailedExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'failed',
+  progress: 0.5,
+  level: 'high',
+  language: 'en',
+  detected_language: 'en',
+  created_at: transcriptionDateTimeExample,
+  updated_at: '2026-07-11T00:26:00.000Z',
+  current_chunk: 16,
+  total_chunks: 33,
+  duration_seconds: 1980.5,
+  model: 'large-v3-turbo',
+  started_at: '2026-07-11T00:01:00.000Z',
+  completed_at: '2026-07-11T00:26:00.000Z',
+  error: {
+    code: 'CHUNK_RETRY_EXHAUSTED',
+    message: 'Chunk retry exhausted'
+  }
+} as const
+
+const transcriptionJobCancelledExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'cancelled',
+  progress: 0,
+  level: 'high',
+  language: 'en',
+  detected_language: null,
+  created_at: transcriptionDateTimeExample,
+  updated_at: '2026-07-11T00:03:00.000Z',
+  completed_at: '2026-07-11T00:03:00.000Z',
+  error: {
+    code: 'JOB_CANCELLED',
+    message: 'Job cancelled'
+  }
+} as const
+
+const transcriptionJobQueuedStatusSchema = transcriptionJobStatusCommonSchema
+  .extend({
+    status: z.literal('queued').openapi({ example: transcriptionJobSummaryExample.status, description: 'Queued Transcription Job waiting for background processing.' })
+  })
+  .openapi('TranscriptionJobQueuedStatusResponse')
+
+const transcriptionJobProcessingStatusSchema = transcriptionJobStatusCommonSchema
+  .extend({
+    status: z.literal('processing').openapi({ example: transcriptionJobProcessingExample.status, description: 'Transcription Job actively processing uploaded media.' }),
+    current_chunk: z.number().int().nonnegative().openapi({ example: transcriptionJobProcessingExample.current_chunk, description: 'Current zero-based chunk index while processing.' }),
+    total_chunks: z.number().int().positive().optional().openapi({ example: transcriptionJobProcessingExample.total_chunks, description: 'Total number of normalized chunks for the job when chunk metadata is available.' }),
+    duration_seconds: z.number().nonnegative().optional().openapi({ example: transcriptionJobProcessingExample.duration_seconds, description: 'Media duration in seconds when known during processing.' }),
+    processing_seconds_elapsed: z.number().nonnegative().openapi({
+      example: transcriptionJobProcessingExample.processing_seconds_elapsed,
+      description: 'Elapsed processing time in seconds for the current in-progress job.'
+    }),
+    model: z.string().optional().openapi({ example: transcriptionJobProcessingExample.model, description: 'Transcription model used for processed chunks when known.' }),
+    started_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobProcessingExample.started_at,
+      description: 'When processing started.'
+    })
+  })
+  .openapi('TranscriptionJobProcessingStatusResponse')
+
+const transcriptionJobCompletedStatusSchema = transcriptionJobStatusCommonSchema
+  .extend({
+    status: z.literal('completed').openapi({ example: transcriptionJobCompletedExample.status, description: 'Completed Transcription Job with a final result available.' }),
+    current_chunk: z.number().int().nonnegative().openapi({ example: transcriptionJobCompletedExample.current_chunk, description: 'Final zero-based chunk cursor after completion.' }),
+    total_chunks: z.number().int().positive().openapi({ example: transcriptionJobCompletedExample.total_chunks, description: 'Total number of normalized chunks processed for the job.' }),
+    duration_seconds: z.number().nonnegative().openapi({ example: transcriptionJobCompletedExample.duration_seconds, description: 'Media duration in seconds.' }),
+    processing_seconds: z.number().nonnegative().openapi({
+      example: transcriptionJobCompletedExample.processing_seconds,
+      description: 'Total transcription processing time in seconds.'
+    }),
+    model: z.string().openapi({ example: transcriptionJobCompletedExample.model, description: 'Transcription model used for the completed job.' }),
+    started_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobCompletedExample.started_at,
+      description: 'When processing started.'
+    }),
+    completed_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobCompletedExample.completed_at,
+      description: 'When the job completed successfully.'
+    }),
+    result_url: z.string().openapi({
+      example: transcriptionJobCompletedExample.result_url,
+      description: 'Relative URL for fetching the completed Job Result.'
+    })
+  })
+  .openapi('TranscriptionJobCompletedStatusResponse')
+
+const transcriptionJobFailedStatusSchema = transcriptionJobStatusCommonSchema
+  .extend({
+    status: z.literal('failed').openapi({ example: transcriptionJobFailedExample.status, description: 'Failed Transcription Job with terminal error details.' }),
+    current_chunk: z.number().int().nonnegative().optional().openapi({ example: transcriptionJobFailedExample.current_chunk, description: 'Last chunk cursor reached before failure, when available.' }),
+    total_chunks: z.number().int().positive().optional().openapi({ example: transcriptionJobFailedExample.total_chunks, description: 'Total number of normalized chunks for the job when known.' }),
+    duration_seconds: z.number().nonnegative().optional().openapi({ example: transcriptionJobFailedExample.duration_seconds, description: 'Media duration in seconds when known.' }),
+    model: z.string().optional().openapi({ example: transcriptionJobFailedExample.model, description: 'Transcription model used before the failure, when known.' }),
+    started_at: transcriptionJobDateTimeSchema.optional().openapi({
+      example: transcriptionJobFailedExample.started_at,
+      description: 'When processing started, if it started before the failure.'
+    }),
+    completed_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobFailedExample.completed_at,
+      description: 'When the job reached the failed terminal state.'
+    }),
+    error: transcriptionJobErrorSchema.openapi({ example: transcriptionJobFailedExample.error, description: 'Stable failure code and message for the terminal job failure.' })
+  })
+  .openapi('TranscriptionJobFailedStatusResponse')
+
+function createTranscriptionJobCancelledSchema(name: string, description: string) {
+  return transcriptionJobStatusCommonSchema
+    .extend({
+      status: z.literal('cancelled').openapi({ example: transcriptionJobCancelledExample.status, description: 'Cancelled Transcription Job.' }),
+      current_chunk: z.number().int().nonnegative().optional().openapi({ example: 3, description: 'Last chunk cursor reached before cancellation, when available.' }),
+      total_chunks: z.number().int().positive().optional().openapi({ example: 12, description: 'Total number of normalized chunks for the job when known.' }),
+      duration_seconds: z.number().nonnegative().optional().openapi({ example: 720.5, description: 'Media duration in seconds when known.' }),
+      model: z.string().optional().openapi({ example: 'large-v3-turbo', description: 'Transcription model used before cancellation, when known.' }),
+      started_at: transcriptionJobDateTimeSchema.optional().openapi({
+        example: '2026-07-11T00:01:00.000Z',
+        description: 'When processing started, if cancellation happened after processing began.'
+      }),
+      completed_at: transcriptionJobDateTimeSchema.openapi({
+        example: transcriptionJobCancelledExample.completed_at,
+        description: 'When the job reached the cancelled terminal state.'
+      }),
+      error: transcriptionJobErrorSchema.openapi({
+        example: transcriptionJobCancelledExample.error,
+        description: 'Stable cancellation code and message.'
+      })
+    })
+    .openapi(name, { description })
+}
+
+const transcriptionJobCancelledStatusSchema = createTranscriptionJobCancelledSchema(
+  'TranscriptionJobCancelledStatusResponse',
+  'Cancelled Transcription Job status response.'
+)
+
+const transcriptionJobStatusResponseSchema = z
+  .union([
+    transcriptionJobQueuedStatusSchema,
+    transcriptionJobProcessingStatusSchema,
+    transcriptionJobCompletedStatusSchema,
+    transcriptionJobFailedStatusSchema,
+    transcriptionJobCancelledStatusSchema
+  ])
+  .openapi('TranscriptionJobStatusResponse')
+
+const transcriptionJobNotFoundExample = { error: 'not_found' } as const
+const transcriptionJobNotFoundResponseSchema = createLiteralErrorSchema('TranscriptionJobNotFoundResponse', 'not_found')
+
+const transcriptionJobResultSegmentExample = {
+  start: 0,
+  end: 0.5,
+  text: 'hello',
+  chunk_index: 0
+} as const
+
+const transcriptionJobResultSegmentSchema = z
+  .object({
+    start: z.number().openapi({ example: transcriptionJobResultSegmentExample.start, description: 'Segment start time in seconds.' }),
+    end: z.number().openapi({ example: transcriptionJobResultSegmentExample.end, description: 'Segment end time in seconds.' }),
+    text: z.string().openapi({ example: transcriptionJobResultSegmentExample.text, description: 'Transcript text for the segment.' }),
+    chunk_index: z.number().int().nonnegative().openapi({
+      example: transcriptionJobResultSegmentExample.chunk_index,
+      description: 'Zero-based chunk index that produced the segment.'
+    })
+  })
+  .openapi('TranscriptionJobResultSegment')
+
+const transcriptionJobResultResponseExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'completed',
+  text: 'hello',
+  segments: [transcriptionJobResultSegmentExample],
+  duration_seconds: 0.5,
+  processing_seconds: 0.2,
+  level: 'medium',
+  language: 'auto',
+  detected_language: 'en',
+  model: 'distil-small.en'
+} as const
+
+const transcriptionJobResultResponseSchema = z
+  .object({
+    job_id: z.string().openapi({ example: transcriptionJobResultResponseExample.job_id, description: 'Public Transcription Job identifier.' }),
+    status: z.literal('completed').openapi({ example: transcriptionJobResultResponseExample.status, description: 'Completed Transcription Job state for final result retrieval.' }),
+    text: z.string().openapi({ example: transcriptionJobResultResponseExample.text, description: 'Full transcript text for the completed job.' }),
+    segments: z.array(transcriptionJobResultSegmentSchema).openapi({
+      example: transcriptionJobResultResponseExample.segments,
+      description: 'Timestamped transcript segments in playback order with chunk provenance.'
+    }),
+    duration_seconds: z.number().openapi({
+      example: transcriptionJobResultResponseExample.duration_seconds,
+      description: 'Media duration in seconds.'
+    }),
+    processing_seconds: z.number().openapi({
+      example: transcriptionJobResultResponseExample.processing_seconds,
+      description: 'Total transcription processing time in seconds.'
+    }),
+    level: z.enum(TRANSCRIPTION_LEVELS).openapi({
+      example: transcriptionJobResultResponseExample.level,
+      description: 'Normalized transcription level used for the job.'
+    }),
+    language: z.enum(TRANSCRIPTION_LANGUAGE_HINTS).openapi({
+      example: transcriptionJobResultResponseExample.language,
+      description: 'Normalized request Language Hint used for the job.'
+    }),
+    detected_language: z.string().nullable().openapi({
+      example: transcriptionJobResultResponseExample.detected_language,
+      description: 'Detected Language returned by the model, when available.'
+    }),
+    model: z.string().openapi({
+      example: transcriptionJobResultResponseExample.model,
+      description: 'Transcription model identifier returned by the worker.'
+    })
+  })
+  .openapi('TranscriptionJobResultResponse')
+
+const transcriptionJobResultNotCompletedExample = {
+  error: 'job_not_completed',
+  status: 'queued'
+} as const
+
+const transcriptionJobResultNotCompletedResponseSchema = z
+  .object({
+    error: z.literal('job_not_completed').openapi({ example: transcriptionJobResultNotCompletedExample.error }),
+    status: z.enum(['queued', 'processing']).openapi({
+      example: transcriptionJobResultNotCompletedExample.status,
+      description: 'Current in-progress Transcription Job state preventing result retrieval.'
+    })
+  })
+  .openapi('TranscriptionJobResultNotCompletedResponse')
+
+const transcriptionJobResultFailedExample = {
+  error: {
+    code: 'TRANSCRIPTION_WORKER_FAILED',
+    message: 'Transcription job failed'
+  }
+} as const
+
+const transcriptionJobResultFailedResponseSchema = z
+  .object({
+    error: transcriptionJobErrorSchema.openapi({
+      example: transcriptionJobResultFailedExample.error,
+      description: 'Stable failure code and message for the failed Transcription Job.'
+    })
+  })
+  .openapi('TranscriptionJobResultFailedResponse')
+
+const transcriptionJobResultCancelledExample = { error: 'job_cancelled' } as const
+const transcriptionJobResultCancelledResponseSchema = createLiteralErrorSchema('TranscriptionJobResultCancelledResponse', 'job_cancelled')
+
+const transcriptionJobResultMissingExample = { error: 'job_result_missing' } as const
+const transcriptionJobResultMissingResponseSchema = createLiteralErrorSchema('TranscriptionJobResultMissingResponse', 'job_result_missing')
+
+const transcriptionJobAlreadyTerminalExample = {
+  error: 'job_already_terminal',
+  status: 'completed'
+} as const
+
+const transcriptionJobAlreadyTerminalResponseSchema = z
+  .object({
+    error: z.literal('job_already_terminal').openapi({ example: transcriptionJobAlreadyTerminalExample.error }),
+    status: z.enum(['completed', 'failed']).openapi({
+      example: transcriptionJobAlreadyTerminalExample.status,
+      description: 'Existing terminal Transcription Job state that cannot be cancelled.'
+    })
+  })
+  .openapi('TranscriptionJobAlreadyTerminalResponse')
+
+const transcriptionJobCancellationResponseSchema = createTranscriptionJobCancelledSchema(
+  'TranscriptionJobCancellationResponse',
+  'Cancelled Transcription Job returned for successful or idempotent cancellation requests.'
+)
+
 const listTranscriptionJobsRoute = createRoute({
   method: 'get',
   path: '/jobs',
@@ -1281,6 +1631,108 @@ const createTranscriptionJobRoute = createRoute({
       'Unexpected server failure while creating the Transcription Job.',
       transcriptionInternalServerErrorResponseSchema,
       transcriptionInternalServerErrorExample
+    )
+  }
+})
+
+const getTranscriptionJobRoute = createRoute({
+  method: 'get',
+  path: '/jobs/{job_id}',
+  operationId: 'getTranscriptionJob',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'Get transcription job status',
+  description:
+    'Returns the current Transcription Job lifecycle state for the authenticated owner. Jobs owned by another API Token are returned as not found.',
+  security: PROTECTED_BEARER_SECURITY,
+  request: {
+    params: transcriptionJobIdParamsSchema
+  },
+  responses: {
+    200: createJsonResponse(
+      'Queued, processing, completed, failed, or cancelled Transcription Job status.',
+      transcriptionJobStatusResponseSchema,
+      transcriptionJobCompletedExample
+    ),
+    401: unauthorizedErrorResponse,
+    404: createJsonResponse(
+      'Unknown Transcription Job or a job owned by another API Token.',
+      transcriptionJobNotFoundResponseSchema,
+      transcriptionJobNotFoundExample
+    )
+  }
+})
+
+const getTranscriptionJobResultRoute = createRoute({
+  method: 'get',
+  path: '/jobs/{job_id}/result',
+  operationId: 'getTranscriptionJobResult',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'Get transcription job result',
+  description:
+    'Returns the final transcript when a Transcription Job completes. Queued and processing jobs report not completed, failed jobs return terminal error details, and cancelled jobs return a dedicated cancellation response.',
+  security: PROTECTED_BEARER_SECURITY,
+  request: {
+    params: transcriptionJobIdParamsSchema
+  },
+  responses: {
+    200: createJsonResponse('Completed Transcription Job result.', transcriptionJobResultResponseSchema, transcriptionJobResultResponseExample),
+    401: unauthorizedErrorResponse,
+    404: createJsonResponse(
+      'Unknown Transcription Job or a job owned by another API Token.',
+      transcriptionJobNotFoundResponseSchema,
+      transcriptionJobNotFoundExample
+    ),
+    409: createJsonResponse(
+      'Transcription Job has not completed yet.',
+      transcriptionJobResultNotCompletedResponseSchema,
+      transcriptionJobResultNotCompletedExample
+    ),
+    410: createJsonResponse(
+      'Transcription Job was cancelled before a result became available.',
+      transcriptionJobResultCancelledResponseSchema,
+      transcriptionJobResultCancelledExample
+    ),
+    422: createJsonResponse(
+      'Transcription Job failed and no completed result is available.',
+      transcriptionJobResultFailedResponseSchema,
+      transcriptionJobResultFailedExample
+    ),
+    500: createJsonResponse(
+      'Completed Transcription Job has a missing stored result.',
+      transcriptionJobResultMissingResponseSchema,
+      transcriptionJobResultMissingExample
+    )
+  }
+})
+
+const cancelTranscriptionJobRoute = createRoute({
+  method: 'delete',
+  path: '/jobs/{job_id}',
+  operationId: 'cancelTranscriptionJob',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'Cancel a transcription job',
+  description:
+    'Cancels a queued or processing Transcription Job. Completed and failed jobs are already terminal and cannot be cancelled. Cancelling an already cancelled job is idempotent.',
+  security: PROTECTED_BEARER_SECURITY,
+  request: {
+    params: transcriptionJobIdParamsSchema
+  },
+  responses: {
+    200: createJsonResponse(
+      'Cancelled Transcription Job returned for successful or idempotent cancellation.',
+      transcriptionJobCancellationResponseSchema,
+      transcriptionJobCancelledExample
+    ),
+    401: unauthorizedErrorResponse,
+    404: createJsonResponse(
+      'Unknown Transcription Job or a job owned by another API Token.',
+      transcriptionJobNotFoundResponseSchema,
+      transcriptionJobNotFoundExample
+    ),
+    409: createJsonResponse(
+      'Transcription Job is already in a terminal completed or failed state.',
+      transcriptionJobAlreadyTerminalResponseSchema,
+      transcriptionJobAlreadyTerminalExample
     )
   }
 })
@@ -1488,18 +1940,20 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
     }
   )
 
-  app.get('/jobs/:job_id', async (c) => {
+  app.openapi(getTranscriptionJobRoute, async (c) => {
     const apiToken = c.get('apiToken')
-    const job = await jobStore.findByPublicIdForToken(c.req.param('job_id'), apiToken.id)
+    const { job_id } = c.req.valid('param')
+    const job = await jobStore.findByPublicIdForToken(job_id, apiToken.id)
     if (!job) {
       return c.json({ error: 'not_found' }, 404)
     }
-    return c.json(serializeJob(job))
+    return c.json(serializeJobStatus(job), 200)
   })
 
-  app.get('/jobs/:job_id/result', async (c) => {
+  app.openapi(getTranscriptionJobResultRoute, async (c) => {
     const apiToken = c.get('apiToken')
-    const job = await jobStore.findByPublicIdForToken(c.req.param('job_id'), apiToken.id)
+    const { job_id } = c.req.valid('param')
+    const job = await jobStore.findByPublicIdForToken(job_id, apiToken.id)
     if (!job) {
       return c.json({ error: 'not_found' }, 404)
     }
@@ -1525,12 +1979,13 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
     if (!result) {
       return c.json({ error: 'job_result_missing' }, 500)
     }
-    return c.json(result)
+    return c.json(result, 200)
   })
 
-  app.delete('/jobs/:job_id', async (c) => {
+  app.openapi(cancelTranscriptionJobRoute, async (c) => {
     const apiToken = c.get('apiToken')
-    const job = await jobStore.findByPublicIdForToken(c.req.param('job_id'), apiToken.id)
+    const { job_id } = c.req.valid('param')
+    const job = await jobStore.findByPublicIdForToken(job_id, apiToken.id)
     if (!job) {
       return c.json({ error: 'not_found' }, 404)
     }
@@ -1538,7 +1993,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       return c.json({ error: 'job_already_terminal', status: job.status }, 409)
     }
     if (job.status === 'cancelled') {
-      return c.json(serializeJob(job))
+      return c.json(serializeCancelledJob(job), 200)
     }
 
     const cancelled = await jobStore.update(job.publicId, {
@@ -1557,7 +2012,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       }
     }
     await webhookDispatcher.deliver(cancelled)
-    return c.json(serializeJob(cancelled))
+    return c.json(serializeCancelledJob(cancelled), 200)
   })
 
   return app
