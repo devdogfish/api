@@ -32,6 +32,101 @@ Database migrations are generated in `drizzle/`. Current migration was applied t
 
 Caddy routes `api.girke.dev` to Docker service `girke-api:3000` on the existing external Docker network `llmwiki`. No random public app port is opened. DNS and TLS are live for `https://api.girke.dev`.
 
+## Endpoint inventory
+
+Base URL: `https://api.girke.dev`
+
+Public routes:
+
+- `GET /` — service identity: `{ name, internal, version }`.
+- `GET /health` — health check: `{ ok: true }`.
+- `GET /version` — configured app version.
+- `OPTIONS /api/v1/oona/contact` — Carrd/browser CORS preflight.
+- `POST /api/v1/oona/contact` — public Oona Kokopelli contact form endpoint; no API key required.
+
+Protected routes requiring `X-API-Key`:
+
+- `GET /api/v1/transcription` — transcription capability metadata: levels, languages, accepted media formats.
+- `GET /api/v1/transcription/jobs` — placeholder job list, currently returns `{ jobs: [] }`.
+- `POST /api/v1/transcription/transcribe` — multipart upload transcription for supported audio/video files.
+- `GET /api/v1/feeds` — placeholder feed list, currently returns `{ feeds: [] }`.
+
+Internal Docker-only sidecar routes, not public internet endpoints:
+
+- `GET http://whisper:8000/health`
+- `GET http://whisper:8000/models`
+- `POST http://whisper:8000/transcribe`
+
+## Audio/video transcription
+
+Protected capability endpoint for short/medium audio/video transcription:
+
+```text
+POST https://api.girke.dev/api/v1/transcription/transcribe
+X-API-Key: ...
+Content-Type: multipart/form-data
+```
+
+Multipart fields:
+
+```text
+file=audio or video file, required
+level=low|medium|high, optional, default medium
+language=en|de|english|german|deutsch, optional; omit for auto-detect
+```
+
+Accepted input formats:
+
+```text
+audio: wav, mp3, m4a, aac, ogg, opus, flac, webm
+video: mp4, mov, mkv, webm, avi
+```
+
+The sidecar normalizes every accepted upload through a shared `ffmpeg` helper before model inference: audio is extracted if needed, video streams are dropped, and the model receives mono 16 kHz WAV.
+
+Current CPU-only ARM64 model tiers were benchmarked locally with `faster-whisper`, `int8`, and 4 CPU threads:
+
+- `low`: `base` — fastest reliable tier; better than `tiny` on German in local tests.
+- `medium`: English `distil-small.en`, German/auto `small` — good output while still practical on CPU.
+- `high`: `large-v3-turbo` — best practical model verified on this machine; slower but works for English and German.
+
+Metadata:
+
+```text
+GET https://api.girke.dev/api/v1/transcription
+X-API-Key: ...
+```
+
+Response body:
+
+```json
+{
+  "levels": ["low", "medium", "high"],
+  "languages": [
+    { "code": "en", "name": "English" },
+    { "code": "de", "name": "German" }
+  ],
+  "default_level": "medium",
+  "language_optional": true,
+  "accepted_media": {
+    "audio": ["wav", "mp3", "m4a", "aac", "ogg", "opus", "flac", "webm"],
+    "video": ["mp4", "mov", "mkv", "webm", "avi"]
+  }
+}
+```
+
+Transcription response body:
+
+```json
+{
+  "text": "Transcribed text...",
+  "language": "en",
+  "duration_seconds": 2.74,
+  "level": "medium",
+  "model": "distil-small.en"
+}
+```
+
 ## Oona Kokopelli contact form
 
 Public endpoint for the Carrd landing page at `https://gallery.oonakokopelli.com`:

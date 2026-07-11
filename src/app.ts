@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { requestLogger } from './middleware/logger'
 import { apiKeyAuth } from './middleware/auth'
 import { transcriptionRoutes } from './routes/transcription'
+import type { TranscriptionFetch } from './routes/transcription'
 import { feedRoutes } from './routes/feeds'
 import { oonaContactRoutes, type MailSender, type SenderConfig, type SenderFetch, type SmtpConfig } from './routes/oonaContact'
 
@@ -10,6 +11,7 @@ export type AppConfig = {
   apiKey: string
   version: string
   whisperUrl?: string
+  whisperFetch?: TranscriptionFetch
   sender?: SenderConfig
   senderFetch?: SenderFetch
   smtp?: SmtpConfig
@@ -29,7 +31,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/v1/oona/contact', oonaContactRoutes({ sender: config.sender, senderFetch: config.senderFetch, smtp: config.smtp, mailSender: config.mailSender }))
 
   app.use('/api/v1/*', apiKeyAuth(config.apiKey))
-  app.route('/api/v1/transcription', transcriptionRoutes({ whisperUrl: config.whisperUrl }))
+  app.route('/api/v1/transcription', transcriptionRoutes({ whisperUrl: config.whisperUrl, whisperFetch: config.whisperFetch }))
   app.route('/api/v1/feeds', feedRoutes())
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404))

@@ -32,9 +32,20 @@ services:
     container_name: girke-api-whisper
     build: ./whisper-sidecar
     environment:
-      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_MODEL: ${WHISPER_MODEL:-}
       WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-4}
+      WHISPER_NUM_WORKERS: ${WHISPER_NUM_WORKERS:-1}
+      WHISPER_MODEL_LOW_EN: ${WHISPER_MODEL_LOW_EN:-base}
+      WHISPER_MODEL_LOW_DE: ${WHISPER_MODEL_LOW_DE:-base}
+      WHISPER_MODEL_LOW_AUTO: ${WHISPER_MODEL_LOW_AUTO:-base}
+      WHISPER_MODEL_MEDIUM_EN: ${WHISPER_MODEL_MEDIUM_EN:-distil-small.en}
+      WHISPER_MODEL_MEDIUM_DE: ${WHISPER_MODEL_MEDIUM_DE:-small}
+      WHISPER_MODEL_MEDIUM_AUTO: ${WHISPER_MODEL_MEDIUM_AUTO:-small}
+      WHISPER_MODEL_HIGH_EN: ${WHISPER_MODEL_HIGH_EN:-large-v3-turbo}
+      WHISPER_MODEL_HIGH_DE: ${WHISPER_MODEL_HIGH_DE:-large-v3-turbo}
+      WHISPER_MODEL_HIGH_AUTO: ${WHISPER_MODEL_HIGH_AUTO:-large-v3-turbo}
     volumes:
       - whisper_cache:/root/.cache/huggingface
     networks:
