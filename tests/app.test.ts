@@ -16,6 +16,7 @@ const expectedOpenApiPaths = [
   '/api/v1/oona/contact',
   '/api/v1/transcription',
   '/api/v1/transcription/jobs',
+  '/api/v1/transcription/transcribe',
   '/health',
   '/openapi.json',
   '/reference',
@@ -147,6 +148,47 @@ describe('API base routes', () => {
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Detected Language')
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Language Hint')
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.properties.code.enum).toEqual(['en', 'de'])
+
+    const transcriptionSyncOperation = body.paths['/api/v1/transcription/transcribe'].post
+    expect(transcriptionSyncOperation.operationId).toBe('transcribeSynchronously')
+    expect(transcriptionSyncOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionSyncOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionSyncOperation.requestBody.required).toBe(true)
+    expect(Object.keys(transcriptionSyncOperation.requestBody.content)).toEqual(['multipart/form-data'])
+    expect(transcriptionSyncOperation.requestBody.content['multipart/form-data'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionSyncRequest'
+    )
+    expect(Object.keys(transcriptionSyncOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502'])
+    expect(transcriptionSyncOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionSyncResponse'
+    )
+    expect(transcriptionSyncOperation.responses['413'].content['application/json'].example).toEqual({
+      error: 'sync_upload_too_large',
+      max_bytes: 262144000,
+      jobs_url: '/api/v1/transcription/jobs'
+    })
+    expect(transcriptionSyncOperation.responses['422'].content['application/json'].example).toEqual({
+      error: 'sync_media_too_long',
+      max_duration_seconds: 300,
+      jobs_url: '/api/v1/transcription/jobs'
+    })
+    expect(body.components.schemas.TranscriptionSyncRequest.required).toEqual(['file'])
+    expect(body.components.schemas.TranscriptionSyncRequest.properties.file.type).toBe('string')
+    expect(body.components.schemas.TranscriptionSyncRequest.properties.file.format).toBe('binary')
+    expect(body.components.schemas.TranscriptionSyncRequest.properties.level.enum).toEqual(['low', 'medium', 'high'])
+    expect(body.components.schemas.TranscriptionSyncRequest.properties.language.enum).toEqual(['auto', 'en', 'de'])
+    expect(body.components.schemas.TranscriptionSyncResponse.required.sort()).toEqual([
+      'detected_language',
+      'duration_seconds',
+      'language',
+      'level',
+      'model',
+      'processing_seconds',
+      'segments',
+      'text'
+    ])
+    expect(body.components.schemas.TranscriptionSyncResponse.properties.language.description).toContain('Language Hint')
+    expect(body.components.schemas.TranscriptionSyncResponse.properties.detected_language.description).toContain('Detected Language')
 
     const transcriptionJobsListOperation = body.paths['/api/v1/transcription/jobs'].get
     expect(transcriptionJobsListOperation.operationId).toBe('listTranscriptionJobs')

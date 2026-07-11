@@ -47,22 +47,61 @@ const TRANSCRIPTION_JOB_ERROR_CODES = [
 
 export type TranscriptionFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>
 
-const whisperResponseSchema = z.object({
-  text: z.string(),
-  segments: z.array(
-    z.object({
-      start: z.number(),
-      end: z.number(),
-      text: z.string()
+const transcriptionJobsPath = '/api/v1/transcription/jobs'
+const transcriptionSyncResponseExample = {
+  text: 'hello',
+  segments: [{ start: 0, end: 0.5, text: 'hello' }],
+  duration_seconds: 0.5,
+  processing_seconds: 0.2,
+  level: 'medium',
+  language: 'auto',
+  detected_language: 'en',
+  model: 'distil-small.en'
+} as const
+
+const transcriptionSegmentSchema = z
+  .object({
+    start: z.number().openapi({ example: transcriptionSyncResponseExample.segments[0].start, description: 'Segment start time in seconds.' }),
+    end: z.number().openapi({ example: transcriptionSyncResponseExample.segments[0].end, description: 'Segment end time in seconds.' }),
+    text: z.string().openapi({ example: transcriptionSyncResponseExample.segments[0].text, description: 'Transcript text for the segment.' })
+  })
+  .openapi('TranscriptionSegment')
+
+const whisperResponseSchema = z
+  .object({
+    text: z.string().openapi({ example: transcriptionSyncResponseExample.text, description: 'Full transcript text for the uploaded media.' }),
+    segments: z.array(transcriptionSegmentSchema).openapi({
+      example: transcriptionSyncResponseExample.segments,
+      description: 'Timestamped transcript segments in playback order.'
+    }),
+    duration_seconds: z.number().openapi({
+      example: transcriptionSyncResponseExample.duration_seconds,
+      description: 'Media duration in seconds.'
+    }),
+    processing_seconds: z.number().openapi({
+      example: transcriptionSyncResponseExample.processing_seconds,
+      description: 'Transcription processing time in seconds.'
+    }),
+    level: z.enum(TRANSCRIPTION_LEVELS).openapi({
+      example: transcriptionSyncResponseExample.level,
+      description: 'Normalized transcription level used for the request.'
+    }),
+    language: z.enum(TRANSCRIPTION_LANGUAGE_HINTS).openapi({
+      example: transcriptionSyncResponseExample.language,
+      description: 'Normalized request Language Hint used for the transcription.'
+    }),
+    detected_language: z.string().nullable().openapi({
+      example: transcriptionSyncResponseExample.detected_language,
+      description: 'Detected Language returned by the model, when available.'
+    }),
+    model: z.string().openapi({
+      example: transcriptionSyncResponseExample.model,
+      description: 'Transcription model identifier returned by the sidecar.'
     })
-  ),
-  duration_seconds: z.number(),
-  processing_seconds: z.number(),
-  level: z.enum(TRANSCRIPTION_LEVELS),
-  language: z.enum(TRANSCRIPTION_LANGUAGE_HINTS),
-  detected_language: z.string().nullable(),
-  model: z.string()
-})
+  })
+  .openapi('TranscriptionSyncResponse', {
+    description: 'Synchronous transcription result for a short clip upload.'
+  })
 
 type WhisperResponse = z.infer<typeof whisperResponseSchema>
 
@@ -928,6 +967,154 @@ const transcriptionInternalServerErrorExample = { error: 'internal_server_error'
 
 const transcriptionInternalServerErrorResponseSchema = createLiteralErrorSchema('InternalServerErrorResponse', 'internal_server_error')
 
+const transcriptionSyncFileRequiredErrorSchema = createLiteralErrorSchema(
+  'TranscriptionSyncFileRequiredErrorResponse',
+  'file_required'
+)
+
+const transcriptionSyncInvalidLevelErrorSchema = createLiteralErrorSchema(
+  'TranscriptionSyncInvalidLevelErrorResponse',
+  'invalid_level'
+)
+
+const transcriptionSyncInvalidLanguageErrorSchema = createLiteralErrorSchema(
+  'TranscriptionSyncInvalidLanguageErrorResponse',
+  'invalid_language'
+)
+
+const transcriptionSyncBadRequestResponseSchema = z
+  .union([
+    transcriptionSyncFileRequiredErrorSchema,
+    transcriptionSyncInvalidLevelErrorSchema,
+    transcriptionSyncInvalidLanguageErrorSchema
+  ])
+  .openapi('TranscriptionSyncBadRequestResponse')
+
+const transcriptionSyncUploadTooLargeExample = {
+  error: 'sync_upload_too_large',
+  max_bytes: DEFAULT_SYNC_MAX_UPLOAD_BYTES,
+  jobs_url: transcriptionJobsPath
+} as const
+
+const transcriptionSyncUploadTooLargeResponseSchema = z
+  .object({
+    error: z.literal('sync_upload_too_large').openapi({ example: transcriptionSyncUploadTooLargeExample.error }),
+    max_bytes: z.number().int().positive().openapi({
+      example: transcriptionSyncUploadTooLargeExample.max_bytes,
+      description: 'Maximum accepted synchronous upload size in bytes.'
+    }),
+    jobs_url: z.string().openapi({
+      example: transcriptionSyncUploadTooLargeExample.jobs_url,
+      description: 'Relative URL for creating an async Transcription Job instead.'
+    })
+  })
+  .openapi('TranscriptionSyncUploadTooLargeResponse')
+
+const transcriptionSyncUnsupportedMediaResponseSchema = createLiteralErrorSchema(
+  'TranscriptionSyncUnsupportedMediaResponse',
+  'unsupported_media_format'
+)
+
+const transcriptionSyncMediaNormalizationFailedResponseSchema = createLiteralErrorSchema(
+  'TranscriptionSyncMediaNormalizationFailedResponse',
+  'media_normalization_failed'
+)
+
+const transcriptionSyncMediaTooLongExample = {
+  error: 'sync_media_too_long',
+  max_duration_seconds: DEFAULT_SYNC_MAX_DURATION_SECONDS,
+  jobs_url: transcriptionJobsPath
+} as const
+
+const transcriptionSyncMediaTooLongResponseSchema = z
+  .object({
+    error: z.literal('sync_media_too_long').openapi({ example: transcriptionSyncMediaTooLongExample.error }),
+    max_duration_seconds: z.number().positive().openapi({
+      example: transcriptionSyncMediaTooLongExample.max_duration_seconds,
+      description: 'Maximum accepted synchronous media duration in seconds.'
+    }),
+    jobs_url: z.string().openapi({
+      example: transcriptionSyncMediaTooLongExample.jobs_url,
+      description: 'Relative URL for creating an async Transcription Job instead.'
+    })
+  })
+  .openapi('TranscriptionSyncMediaTooLongResponse')
+
+const transcriptionSyncUnprocessableEntityResponseSchema = z
+  .union([
+    transcriptionSyncMediaNormalizationFailedResponseSchema,
+    transcriptionSyncMediaTooLongResponseSchema
+  ])
+  .openapi('TranscriptionSyncUnprocessableEntityResponse')
+
+const transcriptionSyncWhisperFailedResponseSchema = createLiteralErrorSchema(
+  'TranscriptionSyncWhisperFailedResponse',
+  'whisper_failed'
+)
+
+const transcriptionSyncLevelFieldSchema = z
+  .preprocess(
+    (value) => normalizeCreateJobField(value, normalizeLevel),
+    z.enum(TRANSCRIPTION_LEVELS).optional()
+  )
+  .transform((value) => value ?? DEFAULT_TRANSCRIPTION_LEVEL)
+  .openapi({
+    type: 'string',
+    enum: [...TRANSCRIPTION_LEVELS],
+    example: 'high',
+    description: 'Optional transcription level for short synchronous transcription. Omitted values default to medium.'
+  })
+
+const transcriptionSyncLanguageFieldSchema = z
+  .preprocess(
+    (value) => normalizeCreateJobField(value, normalizeLanguage),
+    z.enum(TRANSCRIPTION_LANGUAGE_HINTS).optional()
+  )
+  .transform((value) => value ?? 'auto')
+  .openapi({
+    type: 'string',
+    enum: [...TRANSCRIPTION_LANGUAGE_HINTS],
+    example: 'en',
+    description:
+      'Optional Language Hint for short synchronous transcription. Accepted aliases normalize to supported values and omitted values default to auto detection.'
+  })
+
+const transcriptionSyncRequestSchema = z
+  .object({
+    file: z.file().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Audio or video file uploaded for short synchronous transcription.'
+    }),
+    level: transcriptionSyncLevelFieldSchema,
+    language: transcriptionSyncLanguageFieldSchema
+  })
+  .openapi('TranscriptionSyncRequest', {
+    description: 'Multipart synchronous transcription fields for short clips.'
+  })
+
+type TranscriptionSyncBadRequestResponse = z.infer<typeof transcriptionSyncBadRequestResponseSchema>
+
+const transcriptionSyncBadRequestBodies = {
+  file: { error: 'file_required' },
+  level: { error: 'invalid_level' },
+  language: { error: 'invalid_language' }
+} as const satisfies Record<string, TranscriptionSyncBadRequestResponse>
+
+const transcriptionSyncBadRequestFieldOrder = ['file', 'level', 'language'] as const
+
+function getTranscriptionSyncBadRequestBody(issues: z.ZodIssue[]): TranscriptionSyncBadRequestResponse {
+  const fieldErrors = new Set(issues.map((issue) => String(issue.path[0] ?? '')))
+
+  for (const field of transcriptionSyncBadRequestFieldOrder) {
+    if (fieldErrors.has(field)) {
+      return transcriptionSyncBadRequestBodies[field]
+    }
+  }
+
+  return transcriptionSyncBadRequestBodies.file
+}
+
 const transcriptionJobCreateLevelFieldSchema = z
   .preprocess(
     (value) => normalizeCreateJobField(value, normalizeLevel),
@@ -1079,6 +1266,63 @@ const createTranscriptionJobRoute = createRoute({
   }
 })
 
+const transcriptionSyncRoute = createRoute({
+  method: 'post',
+  path: '/transcribe',
+  operationId: 'transcribeSynchronously',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'Synchronously transcribe a short clip',
+  description:
+    'Uploads a short audio or video clip, normalizes level and Language Hint values, and returns the transcript inline. Longer media should use Transcription Jobs instead.',
+  security: PROTECTED_BEARER_SECURITY,
+  request: {
+    required: true,
+    body: {
+      required: true,
+      description:
+        'Multipart upload fields for short synchronous transcription. Omitted level defaults to medium and omitted language defaults to auto detection.',
+      content: {
+        'multipart/form-data': {
+          schema: transcriptionSyncRequestSchema
+        }
+      }
+    }
+  },
+  responses: {
+    200: createJsonResponse(
+      'Synchronous transcription completed successfully.',
+      whisperResponseSchema,
+      transcriptionSyncResponseExample
+    ),
+    400: createJsonResponse(
+      'Missing file or invalid multipart field value.',
+      transcriptionSyncBadRequestResponseSchema,
+      { error: 'file_required' }
+    ),
+    401: unauthorizedErrorResponse,
+    413: createJsonResponse(
+      'Upload exceeds the synchronous body size limit. Use Transcription Jobs for larger media.',
+      transcriptionSyncUploadTooLargeResponseSchema,
+      transcriptionSyncUploadTooLargeExample
+    ),
+    415: createJsonResponse(
+      'Uploaded filename extension is not supported for transcription.',
+      transcriptionSyncUnsupportedMediaResponseSchema,
+      { error: 'unsupported_media_format' }
+    ),
+    422: createJsonResponse(
+      'Media normalization failed or the uploaded clip exceeds the synchronous duration limit.',
+      transcriptionSyncUnprocessableEntityResponseSchema,
+      transcriptionSyncMediaTooLongExample
+    ),
+    502: createJsonResponse(
+      'Whisper sidecar failed while processing the synchronous transcription request.',
+      transcriptionSyncWhisperFailedResponseSchema,
+      { error: 'whisper_failed' }
+    )
+  }
+})
+
 const transcriptionMetadataRoute = createRoute({
   method: 'get',
   path: '/',
@@ -1173,6 +1417,65 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
     }
   )
 
+  app.openapi(
+    transcriptionSyncRoute,
+    async (c) => {
+      const form = c.req.valid('form')
+      const file = form.file
+      const level = form.level
+      const language = form.language
+      if (file.size > syncMaxUploadBytes) {
+        return c.json({ error: 'sync_upload_too_large', max_bytes: syncMaxUploadBytes, jobs_url: transcriptionJobsPath }, 413)
+      }
+      if (!isSupportedMedia(file.name)) {
+        return c.json({ error: 'unsupported_media_format' }, 415)
+      }
+
+      const tempUpload = await writeTempUpload(file)
+      try {
+        const duration = await durationProbe.probe(tempUpload.path)
+        if (duration.durationSeconds !== null && duration.durationSeconds > syncMaxDurationSeconds) {
+          return c.json({ error: 'sync_media_too_long', max_duration_seconds: syncMaxDurationSeconds, jobs_url: transcriptionJobsPath }, 422)
+        }
+      } finally {
+        await rm(tempUpload.dir, { recursive: true, force: true })
+      }
+
+      const outgoing = new FormData()
+      outgoing.set('file', file, file.name)
+      outgoing.set('level', level)
+      if (language !== 'auto') {
+        outgoing.set('language', language)
+      }
+
+      const response = await whisperFetch(`${whisperUrl}/transcribe`, {
+        method: 'POST',
+        body: outgoing
+      })
+
+      if (!response.ok) {
+        if (response.status === 415) {
+          return c.json({ error: 'unsupported_media_format' }, 415)
+        }
+        if (response.status === 422) {
+          return c.json({ error: 'media_normalization_failed' }, 422)
+        }
+        return c.json({ error: 'whisper_failed' }, 502)
+      }
+
+      const parsed = whisperResponseSchema.parse(await response.json())
+      if (parsed.duration_seconds > syncMaxDurationSeconds) {
+        return c.json({ error: 'sync_media_too_long', max_duration_seconds: syncMaxDurationSeconds, jobs_url: transcriptionJobsPath }, 422)
+      }
+      return c.json(parsed, 200)
+    },
+    (result, c) => {
+      if (result.success) return
+
+      return c.json(getTranscriptionSyncBadRequestBody(result.error.issues), 400)
+    }
+  )
+
   app.get('/jobs/:job_id', async (c) => {
     const apiToken = c.get('apiToken')
     const job = await jobStore.findByPublicIdForToken(c.req.param('job_id'), apiToken.id)
@@ -1243,68 +1546,6 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
     }
     await webhookDispatcher.deliver(cancelled)
     return c.json(serializeJob(cancelled))
-  })
-
-  app.post('/transcribe', async (c) => {
-    const form = await c.req.formData()
-    const file = form.get('file')
-    if (!(file instanceof File)) {
-      return c.json({ error: 'file_required' }, 400)
-    }
-    if (file.size > syncMaxUploadBytes) {
-      return c.json({ error: 'sync_upload_too_large', max_bytes: syncMaxUploadBytes, jobs_url: '/api/v1/transcription/jobs' }, 413)
-    }
-    if (!isSupportedMedia(file.name)) {
-      return c.json({ error: 'unsupported_media_format' }, 415)
-    }
-
-    const level = normalizeLevel(form.get('level'))
-    if (level === null) {
-      return c.json({ error: 'invalid_level' }, 400)
-    }
-
-    const language = normalizeLanguage(form.get('language'))
-    if (language === null) {
-      return c.json({ error: 'invalid_language' }, 400)
-    }
-
-    const tempUpload = await writeTempUpload(file)
-    try {
-      const duration = await durationProbe.probe(tempUpload.path)
-      if (duration.durationSeconds !== null && duration.durationSeconds > syncMaxDurationSeconds) {
-        return c.json({ error: 'sync_media_too_long', max_duration_seconds: syncMaxDurationSeconds, jobs_url: '/api/v1/transcription/jobs' }, 422)
-      }
-    } finally {
-      await rm(tempUpload.dir, { recursive: true, force: true })
-    }
-
-    const outgoing = new FormData()
-    outgoing.set('file', file, file.name)
-    outgoing.set('level', level)
-    if (language !== 'auto') {
-      outgoing.set('language', language)
-    }
-
-    const response = await whisperFetch(`${whisperUrl}/transcribe`, {
-      method: 'POST',
-      body: outgoing
-    })
-
-    if (!response.ok) {
-      if (response.status === 415) {
-        return c.json({ error: 'unsupported_media_format' }, 415)
-      }
-      if (response.status === 422) {
-        return c.json({ error: 'media_normalization_failed' }, 422)
-      }
-      return c.json({ error: 'whisper_failed' }, 502)
-    }
-
-    const parsed = whisperResponseSchema.parse(await response.json())
-    if (parsed.duration_seconds > syncMaxDurationSeconds) {
-      return c.json({ error: 'sync_media_too_long', max_duration_seconds: syncMaxDurationSeconds, jobs_url: '/api/v1/transcription/jobs' }, 422)
-    }
-    return c.json(parsed)
   })
 
   return app
