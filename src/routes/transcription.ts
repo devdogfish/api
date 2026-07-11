@@ -1572,6 +1572,138 @@ const transcriptionJobCancellationResponseSchema = createTranscriptionJobCancell
   'Cancelled Transcription Job returned for successful or idempotent cancellation requests.'
 )
 
+const transcriptionWebhookSignatureHeaderSchema = z.string().optional().openapi({
+  param: {
+    name: 'x-girke-signature',
+    in: 'header'
+  },
+  example: 'sha256=5b1a6c3b1fd7ee4a1bbfd87f57ce5b2b3af0f7f5c0cd6fb948f3e7f0da1d9f4d',
+  description: 'Optional HMAC SHA-256 signature of the JSON payload. Present when Girke API is configured with a webhook secret.'
+})
+
+const transcriptionWebhookHeadersSchema = z.object({
+  'x-girke-signature': transcriptionWebhookSignatureHeaderSchema
+})
+
+const transcriptionJobCompletedWebhookPayloadExample = {
+  event: 'transcription.job.completed',
+  job: transcriptionJobCompletedExample
+} as const
+
+const transcriptionJobCompletedWebhookPayloadSchema = z
+  .object({
+    event: z.literal('transcription.job.completed').openapi({
+      example: transcriptionJobCompletedWebhookPayloadExample.event,
+      description: 'Terminal webhook event sent after a Transcription Job completes successfully.'
+    }),
+    job: transcriptionJobCompletedStatusSchema
+  })
+  .openapi('TranscriptionJobCompletedWebhookPayload')
+
+const transcriptionJobFailedWebhookPayloadExample = {
+  event: 'transcription.job.failed',
+  job: transcriptionJobFailedExample
+} as const
+
+const transcriptionJobFailedWebhookPayloadSchema = z
+  .object({
+    event: z.literal('transcription.job.failed').openapi({
+      example: transcriptionJobFailedWebhookPayloadExample.event,
+      description: 'Terminal webhook event sent after a Transcription Job fails.'
+    }),
+    job: transcriptionJobFailedStatusSchema
+  })
+  .openapi('TranscriptionJobFailedWebhookPayload')
+
+const transcriptionJobCancelledWebhookPayloadExample = {
+  event: 'transcription.job.cancelled',
+  job: transcriptionJobCancelledExample
+} as const
+
+const transcriptionJobCancelledWebhookPayloadSchema = z
+  .object({
+    event: z.literal('transcription.job.cancelled').openapi({
+      example: transcriptionJobCancelledWebhookPayloadExample.event,
+      description: 'Terminal webhook event sent after a Transcription Job is cancelled.'
+    }),
+    job: transcriptionJobCancelledStatusSchema
+  })
+  .openapi('TranscriptionJobCancelledWebhookPayload')
+
+function registerTranscriptionWebhook(
+  app: OpenAPIHono<AppEnv>,
+  name: string,
+  operationId: string,
+  summary: string,
+  payloadSchema:
+    | typeof transcriptionJobCompletedWebhookPayloadSchema
+    | typeof transcriptionJobFailedWebhookPayloadSchema
+    | typeof transcriptionJobCancelledWebhookPayloadSchema,
+  payloadExample:
+    | typeof transcriptionJobCompletedWebhookPayloadExample
+    | typeof transcriptionJobFailedWebhookPayloadExample
+    | typeof transcriptionJobCancelledWebhookPayloadExample
+) {
+  app.openAPIRegistry.registerWebhook({
+    method: 'post',
+    path: name,
+    operationId,
+    tags: [TRANSCRIPTION_TAG.name],
+    summary,
+    description:
+      'Outgoing HTTPS webhook sent to the caller-configured webhook_url. Non-2xx receiver responses or delivery failures trigger retry attempts with exponential backoff and do not change the terminal Transcription Job status. When a webhook secret is configured, the x-girke-signature header contains an HMAC SHA-256 of the JSON request body.',
+    request: {
+      headers: transcriptionWebhookHeadersSchema,
+      body: {
+        required: true,
+        description: 'Webhook JSON payload sent for the terminal Transcription Job event.',
+        content: {
+          'application/json': {
+            schema: payloadSchema,
+            example: payloadExample
+          }
+        }
+      }
+    },
+    responses: {
+      '2XX': {
+        description: 'Webhook receiver acknowledged the delivery.'
+      },
+      default: {
+        description:
+          'Any non-2xx receiver response is treated as a delivery failure and may be retried without changing the terminal Transcription Job status.'
+      }
+    }
+  })
+}
+
+export function registerTranscriptionWebhooks(app: OpenAPIHono<AppEnv>) {
+  registerTranscriptionWebhook(
+    app,
+    'transcription.job.completed',
+    'deliverTranscriptionJobCompletedWebhook',
+    'Deliver completed Transcription Job webhook',
+    transcriptionJobCompletedWebhookPayloadSchema,
+    transcriptionJobCompletedWebhookPayloadExample
+  )
+  registerTranscriptionWebhook(
+    app,
+    'transcription.job.failed',
+    'deliverTranscriptionJobFailedWebhook',
+    'Deliver failed Transcription Job webhook',
+    transcriptionJobFailedWebhookPayloadSchema,
+    transcriptionJobFailedWebhookPayloadExample
+  )
+  registerTranscriptionWebhook(
+    app,
+    'transcription.job.cancelled',
+    'deliverTranscriptionJobCancelledWebhook',
+    'Deliver cancelled Transcription Job webhook',
+    transcriptionJobCancelledWebhookPayloadSchema,
+    transcriptionJobCancelledWebhookPayloadExample
+  )
+}
+
 const listTranscriptionJobsRoute = createRoute({
   method: 'get',
   path: '/jobs',

@@ -298,6 +298,50 @@ describe('API base routes', () => {
     })
   })
 
+  test('GET /openapi.json documents transcription webhook payloads and the OpenAPI document example', async () => {
+    const app = createTestApp()
+    const res = await app.request('/openapi.json')
+
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(Object.keys(body.webhooks).sort()).toEqual([
+      'transcription.job.cancelled',
+      'transcription.job.completed',
+      'transcription.job.failed'
+    ])
+
+    const completedWebhook = body.webhooks['transcription.job.completed'].post
+    expect(completedWebhook.operationId).toBe('deliverTranscriptionJobCompletedWebhook')
+    expect(completedWebhook.tags).toEqual(['Transcription'])
+    expect(completedWebhook.description).toContain('retry')
+    expect(completedWebhook.description).toContain('x-girke-signature')
+    expect(completedWebhook.parameters).toEqual([
+      expect.objectContaining({
+        name: 'x-girke-signature',
+        in: 'header',
+        required: false
+      })
+    ])
+    expect(completedWebhook.requestBody.required).toBe(true)
+    expect(completedWebhook.requestBody.content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobCompletedWebhookPayload'
+    )
+
+    expect(body.webhooks['transcription.job.failed'].post.requestBody.content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobFailedWebhookPayload'
+    )
+    expect(body.webhooks['transcription.job.cancelled'].post.requestBody.content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobCancelledWebhookPayload'
+    )
+
+    expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.webhooks).toEqual({
+      'transcription.job.completed': {},
+      'transcription.job.failed': {},
+      'transcription.job.cancelled': {}
+    })
+  })
+
   test('GET /reference returns public Scalar HTML pointed at the OpenAPI document', async () => {
     const app = createTestApp()
     const res = await app.request('/reference')

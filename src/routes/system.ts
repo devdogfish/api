@@ -59,10 +59,20 @@ const openApiDocumentExamplePaths = {
   '/api/v1/feeds': {},
   '/api/v1/oona/contact': {},
   '/api/v1/transcription': {},
+  '/api/v1/transcription/jobs': {},
+  '/api/v1/transcription/jobs/{job_id}': {},
+  '/api/v1/transcription/jobs/{job_id}/result': {},
+  '/api/v1/transcription/transcribe': {},
   '/health': {},
   '/version': {},
   [OPENAPI_DOCUMENT_PATH]: {},
   [API_REFERENCE_PATH]: {}
+} as const
+
+const openApiDocumentExampleWebhooks = {
+  'transcription.job.completed': {},
+  'transcription.job.failed': {},
+  'transcription.job.cancelled': {}
 } as const
 
 const openApiComponentsSchema = z
@@ -82,6 +92,7 @@ const openApiDocumentSchema = z
       })
       .optional(),
     paths: z.record(z.string(), z.any()).optional(),
+    webhooks: z.record(z.string(), z.any()).optional(),
     components: openApiComponentsSchema.optional()
   })
   .openapi('OpenApiDocument')
@@ -149,6 +160,7 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
     info: openApiConfig.info,
     tags: openApiConfig.tags,
     paths: openApiDocumentExamplePaths,
+    webhooks: openApiDocumentExampleWebhooks,
     components: openApiConfig.components
   }
 

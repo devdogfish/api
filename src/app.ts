@@ -3,12 +3,13 @@ import { bodyLimit } from 'hono/body-limit'
 import { requestLogger } from './middleware/logger'
 import { bearerTokenAuth, type ApiTokenStore } from './middleware/auth'
 import type { AppEnv } from './appEnv'
-import { transcriptionRoutes } from './routes/transcription'
-import type {
-  TranscriptionFetch,
-  TranscriptionJobStore,
-  TranscriptionWebhookFetch,
-  TranscriptionWorker
+import {
+  registerTranscriptionWebhooks,
+  transcriptionRoutes,
+  type TranscriptionFetch,
+  type TranscriptionJobStore,
+  type TranscriptionWebhookFetch,
+  type TranscriptionWorker
 } from './routes/transcription'
 import type { TranscriptionDurationProbe, TranscriptionMediaProcessor } from './transcription/mediaProcessor'
 import { feedRoutes } from './routes/feeds'
@@ -86,6 +87,7 @@ export function createApp(config: AppConfig) {
       asyncMaxDurationSeconds: config.transcriptionAsyncMaxDurationSeconds
     })
   )
+  registerTranscriptionWebhooks(app)
   app.route('/api/v1/feeds', feedRoutes())
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404))
