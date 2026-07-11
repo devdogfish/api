@@ -15,6 +15,10 @@ export const API_REFERENCE_TAG = {
   name: 'API Reference',
   description: 'Public OpenAPI JSON and Scalar API reference routes.'
 } as const
+export const OONA_CONTACT_TAG = {
+  name: 'Oona Contact',
+  description: 'Public Oona Kokopelli contact submission route.'
+} as const
 
 export function createOpenApiDocumentConfig(version: string) {
   return {
@@ -24,7 +28,7 @@ export function createOpenApiDocumentConfig(version: string) {
       version,
       description: API_DESCRIPTION
     },
-    tags: [SYSTEM_TAG, API_REFERENCE_TAG],
+    tags: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG],
     components: {
       securitySchemes: {
         [BEARER_SECURITY_SCHEME]: {

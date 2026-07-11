@@ -31,7 +31,22 @@ describe('API base routes', () => {
       }
     })
 
-    expect(Object.keys(body.paths).sort()).toEqual(['/', '/health', '/openapi.json', '/reference', '/version'])
+    expect(body.tags).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'System' }),
+        expect.objectContaining({ name: 'API Reference' }),
+        expect.objectContaining({ name: 'Oona Contact' })
+      ])
+    )
+
+    expect(Object.keys(body.paths).sort()).toEqual([
+      '/',
+      '/api/v1/oona/contact',
+      '/health',
+      '/openapi.json',
+      '/reference',
+      '/version'
+    ])
 
     expect(body.paths['/'].get.operationId).toBe('getApiRoot')
     expect(body.paths['/'].get.tags).toEqual(['System'])
@@ -56,6 +71,29 @@ describe('API base routes', () => {
       '#/components/schemas/ScalarHtmlDocument'
     )
     expect(body.components.schemas.ScalarHtmlDocument.type).toBe('string')
+
+    const contactOperation = body.paths['/api/v1/oona/contact'].post
+    expect(contactOperation.operationId).toBe('submitOonaContact')
+    expect(contactOperation.tags).toEqual(['Oona Contact'])
+    expect(contactOperation.security).toBeUndefined()
+    expect(contactOperation.requestBody.required).toBe(true)
+    expect(contactOperation.requestBody.content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/OonaContactRequest'
+    )
+    expect(body.components.schemas.OonaContactRequest.required.sort()).toEqual(['email', 'message', 'name', 'subscribe'])
+    expect(body.components.schemas.OonaContactRequest.properties.name.minLength).toBe(1)
+    expect(body.components.schemas.OonaContactRequest.properties.name.maxLength).toBe(200)
+    expect(body.components.schemas.OonaContactRequest.properties.email.format).toBe('email')
+    expect(body.components.schemas.OonaContactRequest.properties.email.maxLength).toBe(320)
+    expect(body.components.schemas.OonaContactRequest.properties.message.minLength).toBe(1)
+    expect(body.components.schemas.OonaContactRequest.properties.message.maxLength).toBe(5000)
+    expect(body.components.schemas.OonaContactRequest.properties.subscribe.type).toBe('boolean')
+    expect(Object.keys(contactOperation.responses).sort()).toEqual(['200', '400', '502', '503'])
+    expect(contactOperation.responses['200'].content['application/json'].example).toEqual({ success: true })
+    expect(contactOperation.responses['400'].content['application/json'].example).toEqual({
+      success: false,
+      error: 'invalid_request'
+    })
   })
 
   test('GET /reference returns public Scalar HTML pointed at the OpenAPI document', async () => {

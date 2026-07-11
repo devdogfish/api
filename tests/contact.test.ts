@@ -123,6 +123,37 @@ describe('Oona Kokopelli contact form proxy', () => {
     expect(await res.json()).toEqual({ success: false, error: 'invalid_request' })
   })
 
+  test('returns a safe error when mail configuration is missing', async () => {
+    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+
+    const res = await app.request('/api/v1/oona/contact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Jane', email: 'jane@example.com', message: 'Hello', subscribe: false })
+    })
+
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ success: false, error: 'missing_mail_config' })
+  })
+
+  test('returns a safe error when Sender configuration is missing for opt-in requests', async () => {
+    const smtpMessages: Array<any> = []
+    const mailSender: MailSender = async (message) => {
+      smtpMessages.push(message)
+    }
+    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version', smtp: smtpConfig, mailSender })
+
+    const res = await app.request('/api/v1/oona/contact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Jane', email: 'jane@example.com', message: 'Hello', subscribe: true })
+    })
+
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ success: false, error: 'missing_sender_config' })
+    expect(smtpMessages).toHaveLength(1)
+  })
+
   test('returns a safe error when SMTP rejects a request', async () => {
     const mailSender: MailSender = async () => {
       throw new Error('smtp blocked')
