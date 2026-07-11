@@ -24,6 +24,163 @@ const expectedOpenApiPaths = [
   '/reference',
   '/version'
 ]
+type ExpectedOpenApiOperation = {
+  path: string
+  method: 'get' | 'post' | 'delete'
+  operationId: string
+  tag: string
+  security?: Array<Record<string, string[]>>
+  requestContentTypes?: string[]
+  responseStatusCodes: string[]
+  responseContentTypes: string[]
+}
+
+const expectedOpenApiOperations: ExpectedOpenApiOperation[] = [
+  {
+    path: '/',
+    method: 'get',
+    operationId: 'getApiRoot',
+    tag: 'System',
+    responseStatusCodes: ['200'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/health',
+    method: 'get',
+    operationId: 'getHealth',
+    tag: 'System',
+    responseStatusCodes: ['200'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/version',
+    method: 'get',
+    operationId: 'getVersion',
+    tag: 'System',
+    responseStatusCodes: ['200'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/openapi.json',
+    method: 'get',
+    operationId: 'getOpenApiDocument',
+    tag: 'API Reference',
+    responseStatusCodes: ['200'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/reference',
+    method: 'get',
+    operationId: 'getApiReference',
+    tag: 'API Reference',
+    responseStatusCodes: ['200'],
+    responseContentTypes: ['text/html']
+  },
+  {
+    path: '/api/v1/oona/contact',
+    method: 'post',
+    operationId: 'submitOonaContact',
+    tag: 'Oona Contact',
+    requestContentTypes: ['application/json'],
+    responseStatusCodes: ['200', '400', '502', '503'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/feeds',
+    method: 'get',
+    operationId: 'listFeeds',
+    tag: 'Feeds',
+    security: [{ bearerAuth: [] }],
+    responseStatusCodes: ['200', '401'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription',
+    method: 'get',
+    operationId: 'getTranscriptionMetadata',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    responseStatusCodes: ['200', '401'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription/transcribe',
+    method: 'post',
+    operationId: 'transcribeSynchronously',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    requestContentTypes: ['multipart/form-data'],
+    responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription/jobs',
+    method: 'get',
+    operationId: 'listTranscriptionJobs',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    responseStatusCodes: ['200', '401'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription/jobs',
+    method: 'post',
+    operationId: 'createTranscriptionJob',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    requestContentTypes: ['multipart/form-data'],
+    responseStatusCodes: ['202', '400', '401', '413', '415', '422', '500'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription/jobs/{job_id}',
+    method: 'get',
+    operationId: 'getTranscriptionJob',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    responseStatusCodes: ['200', '401', '404'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription/jobs/{job_id}/result',
+    method: 'get',
+    operationId: 'getTranscriptionJobResult',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    responseStatusCodes: ['200', '401', '404', '409', '410', '422', '500'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/transcription/jobs/{job_id}',
+    method: 'delete',
+    operationId: 'cancelTranscriptionJob',
+    tag: 'Transcription',
+    security: [{ bearerAuth: [] }],
+    responseStatusCodes: ['200', '401', '404', '409'],
+    responseContentTypes: ['application/json']
+  }
+] as const
+
+function expectOpenApiOperation(body: any, expected: ExpectedOpenApiOperation) {
+  const operation = body.paths[expected.path]?.[expected.method]
+  expect(operation).toBeDefined()
+  expect(operation.operationId).toBe(expected.operationId)
+  expect(operation.tags).toEqual([expected.tag])
+  expect(operation.security).toEqual(expected.security)
+
+  if (expected.requestContentTypes) {
+    expect(operation.requestBody.required).toBe(true)
+    expect(Object.keys(operation.requestBody.content)).toEqual(expected.requestContentTypes)
+  } else {
+    expect(operation.requestBody).toBeUndefined()
+  }
+
+  expect(Object.keys(operation.responses).sort()).toEqual(expected.responseStatusCodes)
+
+  for (const statusCode of expected.responseStatusCodes) {
+    expect(Object.keys(operation.responses[statusCode].content ?? {})).toEqual(expected.responseContentTypes)
+  }
+}
 
 function createTestApp() {
   return createApp({ apiTokenStore: testApiTokenStore(), version: TEST_VERSION })
@@ -55,6 +212,9 @@ describe('API base routes', () => {
     expect(body.tags).toEqual(expectedOpenApiTags)
 
     expect(Object.keys(body.paths).sort()).toEqual(expectedOpenApiPaths)
+    for (const operation of expectedOpenApiOperations) {
+      expectOpenApiOperation(body, operation)
+    }
 
     expect(body.paths['/'].get.operationId).toBe('getApiRoot')
     expect(body.paths['/'].get.tags).toEqual(['System'])
@@ -310,12 +470,37 @@ describe('API base routes', () => {
       'transcription.job.completed',
       'transcription.job.failed'
     ])
+    expect(body.components.schemas.TranscriptionJobCompletedWebhookPayload).toMatchObject({
+      required: ['event', 'job'],
+      properties: {
+        job: {
+          $ref: '#/components/schemas/TranscriptionJobCompletedStatusResponse'
+        }
+      }
+    })
+    expect(body.components.schemas.TranscriptionJobFailedWebhookPayload).toMatchObject({
+      required: ['event', 'job'],
+      properties: {
+        job: {
+          $ref: '#/components/schemas/TranscriptionJobFailedStatusResponse'
+        }
+      }
+    })
+    expect(body.components.schemas.TranscriptionJobCancelledWebhookPayload).toMatchObject({
+      required: ['event', 'job'],
+      properties: {
+        job: {
+          $ref: '#/components/schemas/TranscriptionJobCancelledStatusResponse'
+        }
+      }
+    })
 
     const completedWebhook = body.webhooks['transcription.job.completed'].post
     expect(completedWebhook.operationId).toBe('deliverTranscriptionJobCompletedWebhook')
     expect(completedWebhook.tags).toEqual(['Transcription'])
     expect(completedWebhook.description).toContain('retry')
     expect(completedWebhook.description).toContain('x-girke-signature')
+    expect(completedWebhook.responses.default.description).toContain('without changing the terminal Transcription Job status')
     expect(completedWebhook.parameters).toEqual([
       expect.objectContaining({
         name: 'x-girke-signature',
@@ -333,6 +518,13 @@ describe('API base routes', () => {
     )
     expect(body.webhooks['transcription.job.cancelled'].post.requestBody.content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionJobCancelledWebhookPayload'
+    )
+    expect(body.paths['/api/v1/transcription/jobs'].post.requestBody.description).toContain('x-girke-signature')
+    expect(body.paths['/api/v1/transcription/jobs'].post.requestBody.description).toContain(
+      'do not change the terminal Transcription Job status'
+    )
+    expect(body.components.schemas.TranscriptionJobCreateRequest.properties.webhook_url.description).toContain(
+      'completed, failed, and cancelled'
     )
 
     expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.webhooks).toEqual({
