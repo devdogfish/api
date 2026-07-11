@@ -988,6 +988,51 @@ describe('transcription capability', () => {
     }
   })
 
+  test('lists only jobs owned by the calling API token', async () => {
+    const uploadDir = await makeUploadDir()
+    const tokenStore = {
+      async findActiveByToken(token: string) {
+        if (token === 'girke_a') return { id: 1, name: 'a' }
+        if (token === 'girke_b') return { id: 2, name: 'b' }
+        return null
+      }
+    }
+    const app = createApp({ apiTokenStore: tokenStore, version: 'test-version', transcriptionUploadDir: uploadDir, transcriptionWorker: null })
+
+    try {
+      const created = await app.request('/api/v1/transcription/jobs', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer girke_a' },
+        body: makeForm({ level: 'high', language: 'en' })
+      })
+      const createdBody = await created.json()
+
+      const ownerList = await app.request('/api/v1/transcription/jobs', {
+        headers: { Authorization: 'Bearer girke_a' }
+      })
+      const otherList = await app.request('/api/v1/transcription/jobs', {
+        headers: { Authorization: 'Bearer girke_b' }
+      })
+
+      expect(ownerList.status).toBe(200)
+      expect(await ownerList.json()).toEqual({
+        jobs: [
+          expect.objectContaining({
+            job_id: createdBody.job_id,
+            status: 'queued',
+            level: 'high',
+            language: 'en',
+            detected_language: null
+          })
+        ]
+      })
+      expect(otherList.status).toBe(200)
+      expect(await otherList.json()).toEqual({ jobs: [] })
+    } finally {
+      await rm(uploadDir, { recursive: true, force: true })
+    }
+  })
+
   test('retries async worker failures before completing a chunk', async () => {
     const uploadDir = await makeUploadDir()
     let attempts = 0

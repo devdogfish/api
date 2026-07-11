@@ -15,6 +15,7 @@ const expectedOpenApiPaths = [
   '/api/v1/feeds',
   '/api/v1/oona/contact',
   '/api/v1/transcription',
+  '/api/v1/transcription/jobs',
   '/health',
   '/openapi.json',
   '/reference',
@@ -146,6 +147,46 @@ describe('API base routes', () => {
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Detected Language')
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.description).toContain('Language Hint')
     expect(body.components.schemas.TranscriptionLanguageHintMetadata.properties.code.enum).toEqual(['en', 'de'])
+
+    const transcriptionJobsListOperation = body.paths['/api/v1/transcription/jobs'].get
+    expect(transcriptionJobsListOperation.operationId).toBe('listTranscriptionJobs')
+    expect(transcriptionJobsListOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionJobsListOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(Object.keys(transcriptionJobsListOperation.responses).sort()).toEqual(['200', '401'])
+    expect(transcriptionJobsListOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobListResponse'
+    )
+    expect(transcriptionJobsListOperation.responses['401'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/UnauthorizedErrorResponse'
+    )
+    expect(body.components.schemas.TranscriptionJobListResponse.required).toEqual(['jobs'])
+    expect(body.components.schemas.TranscriptionJobListResponse.properties.jobs.items.$ref).toBe(
+      '#/components/schemas/TranscriptionJobSummary'
+    )
+
+    const transcriptionJobsCreateOperation = body.paths['/api/v1/transcription/jobs'].post
+    expect(transcriptionJobsCreateOperation.operationId).toBe('createTranscriptionJob')
+    expect(transcriptionJobsCreateOperation.tags).toEqual(['Transcription'])
+    expect(transcriptionJobsCreateOperation.security).toEqual([{ bearerAuth: [] }])
+    expect(transcriptionJobsCreateOperation.requestBody.required).toBe(true)
+    expect(Object.keys(transcriptionJobsCreateOperation.requestBody.content)).toEqual(['multipart/form-data'])
+    expect(transcriptionJobsCreateOperation.requestBody.content['multipart/form-data'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobCreateRequest'
+    )
+    expect(Object.keys(transcriptionJobsCreateOperation.responses).sort()).toEqual(['202', '400', '401', '413', '415', '422', '500'])
+    expect(transcriptionJobsCreateOperation.responses['202'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/TranscriptionJobCreateAcceptedResponse'
+    )
+    expect(transcriptionJobsCreateOperation.responses['413'].content['application/json'].example).toEqual({
+      error: 'upload_too_large',
+      max_bytes: 2147483648
+    })
+    expect(body.components.schemas.TranscriptionJobCreateRequest.required).toEqual(['file'])
+    expect(body.components.schemas.TranscriptionJobCreateRequest.properties.file.type).toBe('string')
+    expect(body.components.schemas.TranscriptionJobCreateRequest.properties.file.format).toBe('binary')
+    expect(body.components.schemas.TranscriptionJobCreateRequest.properties.level.enum).toEqual(['low', 'medium', 'high'])
+    expect(body.components.schemas.TranscriptionJobCreateRequest.properties.language.enum).toEqual(['auto', 'en', 'de'])
+    expect(body.components.schemas.TranscriptionJobCreateRequest.properties.webhook_url.format).toBe('uri')
   })
 
   test('GET /reference returns public Scalar HTML pointed at the OpenAPI document', async () => {

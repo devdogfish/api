@@ -21,6 +21,7 @@ import {
   DEFAULT_TRANSCRIPTION_LEVEL,
   SUPPORTED_MEDIA_EXTENSIONS,
   TRANSCRIPTION_LANGUAGE_HINTS,
+  TRANSCRIPTION_JOB_STATUSES,
   transcriptionMetadataResponseExample,
   transcriptionMetadataResponseSchema,
   TRANSCRIPTION_LEVELS,
@@ -35,6 +36,14 @@ const DEFAULT_SYNC_MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 const DEFAULT_SYNC_MAX_DURATION_SECONDS = 300
 const DEFAULT_ASYNC_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 const DEFAULT_ASYNC_MAX_DURATION_SECONDS = 4 * 60 * 60
+const TRANSCRIPTION_JOB_ERROR_CODES = [
+  'UNSUPPORTED_MEDIA_FORMAT',
+  'MEDIA_NORMALIZATION_FAILED',
+  'MEDIA_DURATION_EXCEEDED',
+  'TRANSCRIPTION_WORKER_FAILED',
+  'CHUNK_RETRY_EXHAUSTED',
+  'JOB_CANCELLED'
+] as const
 
 export type TranscriptionFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>
 
@@ -126,12 +135,7 @@ export type TranscriptionChunkRecord = {
 }
 
 export type TranscriptionJobErrorCode =
-  | 'UNSUPPORTED_MEDIA_FORMAT'
-  | 'MEDIA_NORMALIZATION_FAILED'
-  | 'MEDIA_DURATION_EXCEEDED'
-  | 'TRANSCRIPTION_WORKER_FAILED'
-  | 'CHUNK_RETRY_EXHAUSTED'
-  | 'JOB_CANCELLED'
+  (typeof TRANSCRIPTION_JOB_ERROR_CODES)[number]
 
 export type CreateTranscriptionJobInput = {
   apiTokenId: number
@@ -262,10 +266,6 @@ async function writeTempUpload(file: File) {
   return { dir, path }
 }
 
-function iso(date: Date | null) {
-  return date?.toISOString() ?? null
-}
-
 function jobUrls(publicId: string) {
   return {
     status_url: `/api/v1/transcription/jobs/${publicId}`,
@@ -273,11 +273,18 @@ function jobUrls(publicId: string) {
   }
 }
 
-function serializeJob(job: TranscriptionJobRecord) {
-  const body: Record<string, unknown> = {
+type TranscriptionJobSummaryResponse = z.infer<typeof transcriptionJobSummarySchema>
+type TranscriptionJobListResponse = z.infer<typeof transcriptionJobListResponseSchema>
+type TranscriptionJobCreateAcceptedResponse = z.infer<typeof transcriptionJobCreateAcceptedResponseSchema>
+
+function serializeJob(job: TranscriptionJobRecord): TranscriptionJobSummaryResponse {
+  const body: TranscriptionJobSummaryResponse = {
     job_id: job.publicId,
     status: job.status,
     progress: job.progress,
+    level: job.level,
+    language: job.language,
+    detected_language: job.detectedLanguage,
     created_at: job.createdAt.toISOString(),
     updated_at: job.updatedAt.toISOString()
   }
@@ -289,12 +296,9 @@ function serializeJob(job: TranscriptionJobRecord) {
   if (job.status === 'processing' && job.startedAt) {
     body.processing_seconds_elapsed = Math.max(0, (Date.now() - job.startedAt.getTime()) / 1000)
   }
-  body.level = job.level
-  body.language = job.language
-  body.detected_language = job.detectedLanguage
   if (job.model) body.model = job.model
-  if (job.startedAt) body.started_at = iso(job.startedAt)
-  if (job.completedAt) body.completed_at = iso(job.completedAt)
+  if (job.startedAt) body.started_at = job.startedAt.toISOString()
+  if (job.completedAt) body.completed_at = job.completedAt.toISOString()
   if (job.status === 'completed') body.result_url = jobUrls(job.publicId).result_url
   if (job.status === 'failed' || job.status === 'cancelled') {
     body.error = {
@@ -695,6 +699,351 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
   }
 }
 
+const transcriptionJobIdExample = 'tr_01jzexample'
+const transcriptionJobStatusUrlExample = `/api/v1/transcription/jobs/${transcriptionJobIdExample}`
+const transcriptionJobResultUrlExample = `/api/v1/transcription/jobs/${transcriptionJobIdExample}/result`
+const transcriptionDateTimeExample = '2026-07-11T00:00:00.000Z'
+
+const transcriptionJobDateTimeSchema = z.string().datetime({ offset: true })
+
+const transcriptionJobErrorSchema = z
+  .object({
+    code: z
+      .enum(TRANSCRIPTION_JOB_ERROR_CODES)
+      .openapi({ example: 'TRANSCRIPTION_WORKER_FAILED', description: 'Stable Transcription Job failure code.' }),
+    message: z.string().openapi({ example: 'Transcription job failed', description: 'Human-readable Transcription Job failure message.' })
+  })
+  .openapi('TranscriptionJobError')
+
+const transcriptionJobSummaryExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'queued',
+  progress: 0,
+  level: 'high',
+  language: 'en',
+  detected_language: null,
+  created_at: transcriptionDateTimeExample,
+  updated_at: transcriptionDateTimeExample
+} as const
+
+const transcriptionJobSummarySchema = z
+  .object({
+    job_id: z.string().openapi({ example: transcriptionJobSummaryExample.job_id, description: 'Public Transcription Job identifier.' }),
+    status: z.enum(TRANSCRIPTION_JOB_STATUSES).openapi({ example: transcriptionJobSummaryExample.status, description: 'Current Transcription Job status.' }),
+    progress: z.number().min(0).max(1).openapi({ example: transcriptionJobSummaryExample.progress, description: 'Job completion progress from 0 to 1.' }),
+    level: z.enum(TRANSCRIPTION_LEVELS).openapi({ example: transcriptionJobSummaryExample.level, description: 'Requested transcription level for the job.' }),
+    language: z
+      .enum(TRANSCRIPTION_LANGUAGE_HINTS)
+      .openapi({ example: transcriptionJobSummaryExample.language, description: 'Requested Language Hint for the job.' }),
+    detected_language: z
+      .string()
+      .nullable()
+      .openapi({ example: transcriptionJobSummaryExample.detected_language, description: 'Detected Language from processed media, if available.' }),
+    created_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobSummaryExample.created_at,
+      description: 'When the Transcription Job was created.'
+    }),
+    updated_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobSummaryExample.updated_at,
+      description: 'When the Transcription Job record last changed.'
+    }),
+    current_chunk: z.number().int().nonnegative().optional().openapi({ example: 14, description: 'Current zero-based chunk index while processing.' }),
+    total_chunks: z.number().int().positive().optional().openapi({ example: 33, description: 'Total number of normalized chunks for the job.' }),
+    duration_seconds: z.number().nonnegative().optional().openapi({ example: 1980.5, description: 'Media duration in seconds when known.' }),
+    processing_seconds: z
+      .number()
+      .nonnegative()
+      .optional()
+      .openapi({ example: 3637.2, description: 'Total transcription processing time in seconds for completed jobs.' }),
+    processing_seconds_elapsed: z
+      .number()
+      .nonnegative()
+      .optional()
+      .openapi({ example: 732.1, description: 'Elapsed processing time in seconds for in-progress jobs.' }),
+    model: z.string().optional().openapi({ example: 'large-v3-turbo', description: 'Transcription model used for the job when known.' }),
+    started_at: transcriptionJobDateTimeSchema.optional().openapi({
+      example: '2026-07-11T00:01:00.000Z',
+      description: 'When processing started.'
+    }),
+    completed_at: transcriptionJobDateTimeSchema.optional().openapi({
+      example: '2026-07-11T01:01:37.000Z',
+      description: 'When the job reached a terminal state.'
+    }),
+    result_url: z
+      .string()
+      .optional()
+      .openapi({ example: transcriptionJobResultUrlExample, description: 'Relative URL for fetching the completed Job Result.' }),
+    error: transcriptionJobErrorSchema.optional().openapi({ description: 'Terminal failure or cancellation details when present.' })
+  })
+  .openapi('TranscriptionJobSummary', {
+    description: 'Authenticated Transcription Job summary. Listing returns only jobs owned by the calling API Token.'
+  })
+
+const transcriptionJobListResponseExample = {
+  jobs: [transcriptionJobSummaryExample]
+} as const
+
+const transcriptionJobListResponseSchema = z
+  .object({
+    jobs: z.array(transcriptionJobSummarySchema).openapi({
+      example: transcriptionJobListResponseExample.jobs,
+      description: 'Transcription Jobs owned by the authenticated API Token.'
+    })
+  })
+  .openapi('TranscriptionJobListResponse')
+
+const transcriptionJobCreateAcceptedResponseExample = {
+  job_id: transcriptionJobIdExample,
+  status: 'queued',
+  level: 'high',
+  language: 'en',
+  detected_language: null,
+  created_at: transcriptionDateTimeExample,
+  status_url: transcriptionJobStatusUrlExample,
+  result_url: transcriptionJobResultUrlExample
+} as const
+
+const transcriptionJobCreateAcceptedResponseSchema = z
+  .object({
+    job_id: z.string().openapi({ example: transcriptionJobCreateAcceptedResponseExample.job_id, description: 'Public Transcription Job identifier.' }),
+    status: z.literal('queued').openapi({ example: transcriptionJobCreateAcceptedResponseExample.status, description: 'Initial queued Transcription Job status.' }),
+    level: z
+      .enum(TRANSCRIPTION_LEVELS)
+      .openapi({ example: transcriptionJobCreateAcceptedResponseExample.level, description: 'Normalized transcription level stored on the job.' }),
+    language: z
+      .enum(TRANSCRIPTION_LANGUAGE_HINTS)
+      .openapi({ example: transcriptionJobCreateAcceptedResponseExample.language, description: 'Normalized Language Hint stored on the job.' }),
+    detected_language: z
+      .null()
+      .openapi({ example: transcriptionJobCreateAcceptedResponseExample.detected_language, description: 'Detected Language is not known at creation time.' }),
+    created_at: transcriptionJobDateTimeSchema.openapi({
+      example: transcriptionJobCreateAcceptedResponseExample.created_at,
+      description: 'When the Transcription Job was created.'
+    }),
+    status_url: z
+      .string()
+      .openapi({ example: transcriptionJobCreateAcceptedResponseExample.status_url, description: 'Relative URL for polling Transcription Job status.' }),
+    result_url: z
+      .string()
+      .openapi({ example: transcriptionJobCreateAcceptedResponseExample.result_url, description: 'Relative URL for fetching the Job Result later.' })
+  })
+  .openapi('TranscriptionJobCreateAcceptedResponse')
+
+const transcriptionJobCreateFileRequiredErrorSchema = z
+  .object({
+    error: z.literal('file_required').openapi({ example: 'file_required' })
+  })
+  .openapi('TranscriptionJobCreateFileRequiredErrorResponse')
+
+const transcriptionJobCreateInvalidLevelErrorSchema = z
+  .object({
+    error: z.literal('invalid_level').openapi({ example: 'invalid_level' })
+  })
+  .openapi('TranscriptionJobCreateInvalidLevelErrorResponse')
+
+const transcriptionJobCreateInvalidLanguageErrorSchema = z
+  .object({
+    error: z.literal('invalid_language').openapi({ example: 'invalid_language' })
+  })
+  .openapi('TranscriptionJobCreateInvalidLanguageErrorResponse')
+
+const transcriptionJobCreateInvalidWebhookUrlErrorSchema = z
+  .object({
+    error: z.literal('invalid_webhook_url').openapi({ example: 'invalid_webhook_url' })
+  })
+  .openapi('TranscriptionJobCreateInvalidWebhookUrlErrorResponse')
+
+const transcriptionJobCreateBadRequestResponseSchema = z
+  .union([
+    transcriptionJobCreateFileRequiredErrorSchema,
+    transcriptionJobCreateInvalidLevelErrorSchema,
+    transcriptionJobCreateInvalidLanguageErrorSchema,
+    transcriptionJobCreateInvalidWebhookUrlErrorSchema
+  ])
+  .openapi('TranscriptionJobCreateBadRequestResponse')
+
+const transcriptionJobCreateUploadTooLargeExample = {
+  error: 'upload_too_large',
+  max_bytes: DEFAULT_ASYNC_MAX_UPLOAD_BYTES
+} as const
+
+const transcriptionJobCreateUploadTooLargeResponseSchema = z
+  .object({
+    error: z.literal('upload_too_large').openapi({ example: transcriptionJobCreateUploadTooLargeExample.error }),
+    max_bytes: z.number().int().positive().openapi({
+      example: transcriptionJobCreateUploadTooLargeExample.max_bytes,
+      description: 'Maximum accepted async upload size in bytes.'
+    })
+  })
+  .openapi('TranscriptionJobCreateUploadTooLargeResponse')
+
+const transcriptionJobCreateUnsupportedMediaResponseSchema = z
+  .object({
+    error: z.literal('unsupported_media_format').openapi({ example: 'unsupported_media_format' })
+  })
+  .openapi('TranscriptionJobCreateUnsupportedMediaResponse')
+
+const transcriptionJobCreateMediaDurationExceededExample = {
+  error: 'media_duration_exceeded',
+  max_duration_seconds: DEFAULT_ASYNC_MAX_DURATION_SECONDS
+} as const
+
+const transcriptionJobCreateMediaDurationExceededResponseSchema = z
+  .object({
+    error: z.literal('media_duration_exceeded').openapi({ example: transcriptionJobCreateMediaDurationExceededExample.error }),
+    max_duration_seconds: z.number().positive().openapi({
+      example: transcriptionJobCreateMediaDurationExceededExample.max_duration_seconds,
+      description: 'Maximum accepted async media duration in seconds.'
+    })
+  })
+  .openapi('TranscriptionJobCreateMediaDurationExceededResponse')
+
+const transcriptionInternalServerErrorExample = { error: 'internal_server_error' } as const
+
+const transcriptionInternalServerErrorResponseSchema = z
+  .object({
+    error: z.literal('internal_server_error').openapi({ example: transcriptionInternalServerErrorExample.error })
+  })
+  .openapi('InternalServerErrorResponse')
+
+const transcriptionJobCreateLevelFieldSchema = z
+  .preprocess(
+    (value) => {
+      const normalized = normalizeLevel((value as FormDataEntryValue | undefined) ?? null)
+      return normalized === null ? value : normalized
+    },
+    z.enum(TRANSCRIPTION_LEVELS).optional()
+  )
+  .transform((value) => value ?? DEFAULT_TRANSCRIPTION_LEVEL)
+  .openapi({
+    type: 'string',
+    enum: [...TRANSCRIPTION_LEVELS],
+    example: 'high',
+    description: 'Optional transcription level. Aliases are normalized and omitted values default to medium.'
+  })
+
+const transcriptionJobCreateLanguageFieldSchema = z
+  .preprocess(
+    (value) => {
+      const normalized = normalizeLanguage((value as FormDataEntryValue | undefined) ?? null)
+      return normalized === null ? value : normalized
+    },
+    z.enum(TRANSCRIPTION_LANGUAGE_HINTS).optional()
+  )
+  .transform((value) => value ?? 'auto')
+  .openapi({
+    type: 'string',
+    enum: [...TRANSCRIPTION_LANGUAGE_HINTS],
+    example: 'en',
+    description:
+      'Optional Language Hint. Accepted aliases normalize to supported values and omitted values default to auto detection.'
+  })
+
+const transcriptionJobCreateWebhookUrlFieldSchema = z
+  .preprocess(
+    (value) => {
+      const normalized = normalizeWebhookUrl((value as FormDataEntryValue | undefined) ?? null)
+      if (normalized === null) return undefined
+      return normalized === false ? value : normalized
+    },
+    z
+      .string()
+      .url()
+      .refine((value) => new URL(value).protocol === 'https:', { message: 'Webhook URL must use https.' })
+      .optional()
+  )
+  .openapi({
+    example: 'https://example.com/hooks/transcription',
+    format: 'uri',
+    description: 'Optional HTTPS webhook URL for terminal Transcription Job notifications.'
+  })
+
+const transcriptionJobCreateRequestSchema = z
+  .object({
+    file: z.file().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Audio or video file uploaded once for async transcription processing.'
+    }),
+    level: transcriptionJobCreateLevelFieldSchema,
+    language: transcriptionJobCreateLanguageFieldSchema,
+    webhook_url: transcriptionJobCreateWebhookUrlFieldSchema
+  })
+  .openapi('TranscriptionJobCreateRequest', {
+    description: 'Multipart async Transcription Job creation fields.'
+  })
+
+const listTranscriptionJobsRoute = createRoute({
+  method: 'get',
+  path: '/jobs',
+  operationId: 'listTranscriptionJobs',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'List transcription jobs',
+  description: 'Returns Transcription Jobs owned by the authenticated API Token only.',
+  security: PROTECTED_BEARER_SECURITY,
+  responses: {
+    200: createJsonResponse('Token-owned Transcription Jobs.', transcriptionJobListResponseSchema, transcriptionJobListResponseExample),
+    401: unauthorizedErrorResponse
+  }
+})
+
+const createTranscriptionJobRoute = createRoute({
+  method: 'post',
+  path: '/jobs',
+  operationId: 'createTranscriptionJob',
+  tags: [TRANSCRIPTION_TAG.name],
+  summary: 'Create an async transcription job',
+  description:
+    'Uploads audio or video once, stores a Transcription Job owned by the authenticated API Token, and queues background processing.',
+  security: PROTECTED_BEARER_SECURITY,
+  request: {
+    required: true,
+    body: {
+      required: true,
+      description:
+        'Multipart upload fields for async Transcription Job creation. Omitted level defaults to medium, omitted language defaults to auto, webhook_url must be HTTPS when provided.',
+      content: {
+        'multipart/form-data': {
+          schema: transcriptionJobCreateRequestSchema
+        }
+      }
+    }
+  },
+  responses: {
+    202: createJsonResponse(
+      'Transcription Job accepted and queued.',
+      transcriptionJobCreateAcceptedResponseSchema,
+      transcriptionJobCreateAcceptedResponseExample
+    ),
+    400: createJsonResponse(
+      'Missing file or invalid multipart field value.',
+      transcriptionJobCreateBadRequestResponseSchema,
+      { error: 'file_required' }
+    ),
+    401: unauthorizedErrorResponse,
+    413: createJsonResponse(
+      'Upload exceeds the async body size limit.',
+      transcriptionJobCreateUploadTooLargeResponseSchema,
+      transcriptionJobCreateUploadTooLargeExample
+    ),
+    415: createJsonResponse(
+      'Uploaded filename extension is not supported for transcription.',
+      transcriptionJobCreateUnsupportedMediaResponseSchema,
+      { error: 'unsupported_media_format' }
+    ),
+    422: createJsonResponse(
+      'Uploaded media duration exceeds the async job limit.',
+      transcriptionJobCreateMediaDurationExceededResponseSchema,
+      transcriptionJobCreateMediaDurationExceededExample
+    ),
+    500: createJsonResponse(
+      'Unexpected server failure while creating the Transcription Job.',
+      transcriptionInternalServerErrorResponseSchema,
+      transcriptionInternalServerErrorExample
+    )
+  }
+})
+
 const transcriptionMetadataRoute = createRoute({
   method: 'get',
   path: '/',
@@ -738,73 +1087,79 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
 
   app.openapi(transcriptionMetadataRoute, (c) => c.json(createTranscriptionMetadataResponse(), 200))
 
-  app.get('/jobs', async (c) => {
+  app.openapi(listTranscriptionJobsRoute, async (c) => {
     const apiToken = c.get('apiToken')
     const jobs = await jobStore.listForToken(apiToken.id)
-    return c.json({ jobs: jobs.map(serializeJob) })
+    const responseBody: TranscriptionJobListResponse = { jobs: jobs.map(serializeJob) }
+    return c.json(responseBody, 200)
   })
 
-  app.post('/jobs', async (c) => {
-    const apiToken = c.get('apiToken')
-    const form = await c.req.formData()
-    const file = form.get('file')
-    if (!(file instanceof File)) {
-      return c.json({ error: 'file_required' }, 400)
-    }
-    if (file.size > asyncMaxUploadBytes) {
-      return c.json({ error: 'upload_too_large', max_bytes: asyncMaxUploadBytes }, 413)
-    }
-    if (!isSupportedMedia(file.name)) {
-      return c.json({ error: 'unsupported_media_format' }, 415)
-    }
+  app.openapi(
+    createTranscriptionJobRoute,
+    async (c) => {
+      const apiToken = c.get('apiToken')
+      const form = c.req.valid('form')
+      const file = form.file
+      const level = form.level
+      const language = form.language
+      if (file.size > asyncMaxUploadBytes) {
+        return c.json({ error: 'upload_too_large', max_bytes: asyncMaxUploadBytes }, 413)
+      }
+      if (!isSupportedMedia(file.name)) {
+        return c.json({ error: 'unsupported_media_format' }, 415)
+      }
+      const webhookUrl = form.webhook_url ?? null
 
-    const level = normalizeLevel(form.get('level'))
-    if (level === null) {
-      return c.json({ error: 'invalid_level' }, 400)
-    }
+      await mkdir(uploadDir, { recursive: true })
+      const uploadPath = join(uploadDir, `${createPublicJobId()}-${safeFilename(file.name)}`)
+      await writeFile(uploadPath, Buffer.from(await file.arrayBuffer()))
+      const duration = await durationProbe.probe(uploadPath)
+      if (duration.durationSeconds !== null && duration.durationSeconds > asyncMaxDurationSeconds) {
+        await rm(uploadPath, { force: true })
+        return c.json({ error: 'media_duration_exceeded', max_duration_seconds: asyncMaxDurationSeconds }, 422)
+      }
 
-    const language = normalizeLanguage(form.get('language'))
-    if (language === null) {
-      return c.json({ error: 'invalid_language' }, 400)
-    }
+      const job = await jobStore.create({
+        apiTokenId: apiToken.id,
+        level,
+        language,
+        originalFilename: file.name || 'media',
+        inputPath: uploadPath,
+        webhookUrl
+      })
+      worker?.enqueue(job.publicId)
 
-    const webhookUrl = normalizeWebhookUrl(form.get('webhook_url'))
-    if (webhookUrl === false) {
-      return c.json({ error: 'invalid_webhook_url' }, 400)
-    }
-
-    await mkdir(uploadDir, { recursive: true })
-    const uploadPath = join(uploadDir, `${createPublicJobId()}-${safeFilename(file.name)}`)
-    await writeFile(uploadPath, Buffer.from(await file.arrayBuffer()))
-    const duration = await durationProbe.probe(uploadPath)
-    if (duration.durationSeconds !== null && duration.durationSeconds > asyncMaxDurationSeconds) {
-      await rm(uploadPath, { force: true })
-      return c.json({ error: 'media_duration_exceeded', max_duration_seconds: asyncMaxDurationSeconds }, 422)
-    }
-
-    const job = await jobStore.create({
-      apiTokenId: apiToken.id,
-      level,
-      language,
-      originalFilename: file.name || 'media',
-      inputPath: uploadPath,
-      webhookUrl
-    })
-    worker?.enqueue(job.publicId)
-
-    return c.json(
-      {
+      const responseBody: TranscriptionJobCreateAcceptedResponse = {
         job_id: job.publicId,
-        status: job.status,
+        status: 'queued',
         level: job.level,
         language: job.language,
-        detected_language: job.detectedLanguage,
+        detected_language: null,
         created_at: job.createdAt.toISOString(),
         ...jobUrls(job.publicId)
-      },
-      202
-    )
-  })
+      }
+
+      return c.json(responseBody, 202)
+    },
+    (result, c) => {
+      if (result.success) return
+
+      const fieldErrors = new Set(result.error.issues.map((issue) => String(issue.path[0] ?? '')))
+      if (fieldErrors.has('file')) {
+        return c.json({ error: 'file_required' }, 400)
+      }
+      if (fieldErrors.has('level')) {
+        return c.json({ error: 'invalid_level' }, 400)
+      }
+      if (fieldErrors.has('language')) {
+        return c.json({ error: 'invalid_language' }, 400)
+      }
+      if (fieldErrors.has('webhook_url')) {
+        return c.json({ error: 'invalid_webhook_url' }, 400)
+      }
+      return c.json({ error: 'file_required' }, 400)
+    }
+  )
 
   app.get('/jobs/:job_id', async (c) => {
     const apiToken = c.get('apiToken')
