@@ -10,7 +10,9 @@ import {
   API_REFERENCE_TAG,
   API_TITLE,
   BEARER_SECURITY_SCHEME,
+  createJsonResponse,
   createOpenApiDocumentConfig,
+  FEEDS_TAG,
   OONA_CONTACT_TAG,
   OPENAPI_DOCUMENT_PATH,
   OPENAPI_VERSION,
@@ -66,7 +68,7 @@ const openApiDocumentSchema = z
     tags: z
       .array(openApiTagSchema)
       .openapi({
-        example: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG]
+        example: [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG]
       })
       .optional(),
     paths: z.record(z.string(), z.any()).optional(),
@@ -106,15 +108,6 @@ function createVersionResponse(version: string) {
   return { version }
 }
 
-function createJsonContent(schema: StaticJsonSchema | typeof openApiDocumentSchema, example: unknown) {
-  return {
-    'application/json': {
-      schema,
-      example
-    }
-  }
-}
-
 function registerStaticJsonRoute(app: OpenAPIHono<AppEnv>, route: StaticJsonRouteDefinition) {
   app.openapi(
     createRoute({
@@ -125,10 +118,7 @@ function registerStaticJsonRoute(app: OpenAPIHono<AppEnv>, route: StaticJsonRout
       summary: route.summary,
       description: route.description,
       responses: {
-        200: {
-          description: route.responseDescription,
-          content: createJsonContent(route.schema, route.responseBody)
-        }
+        200: createJsonResponse(route.responseDescription, route.schema, route.responseBody)
       }
     }),
     (c) => c.json(route.responseBody, 200)
@@ -150,6 +140,7 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
     tags: openApiConfig.tags,
     paths: {
       '/': {},
+      '/api/v1/feeds': {},
       '/api/v1/oona/contact': {},
       '/health': {},
       '/version': {},
@@ -203,10 +194,7 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
       summary: 'Get OpenAPI JSON',
       description: 'Returns the public OpenAPI 3.1 document generated from runtime route metadata.',
       responses: {
-        200: {
-          description: 'OpenAPI document JSON.',
-          content: createJsonContent(openApiDocumentSchema, openApiDocumentExample)
-        }
+        200: createJsonResponse('OpenAPI document JSON.', openApiDocumentSchema, openApiDocumentExample)
       }
     }),
     (c) => c.json(app.getOpenAPI31Document(openApiConfig), 200)

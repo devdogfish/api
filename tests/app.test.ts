@@ -9,7 +9,7 @@ function createTestApp() {
 }
 
 describe('API base routes', () => {
-  test('GET /openapi.json documents public system routes and docs endpoints', async () => {
+  test('GET /openapi.json documents public routes and protected feeds auth metadata', async () => {
     const app = createTestApp()
     const res = await app.request('/openapi.json')
 
@@ -35,12 +35,14 @@ describe('API base routes', () => {
       expect.arrayContaining([
         expect.objectContaining({ name: 'System' }),
         expect.objectContaining({ name: 'API Reference' }),
-        expect.objectContaining({ name: 'Oona Contact' })
+        expect.objectContaining({ name: 'Oona Contact' }),
+        expect.objectContaining({ name: 'Feeds' })
       ])
     )
 
     expect(Object.keys(body.paths).sort()).toEqual([
       '/',
+      '/api/v1/feeds',
       '/api/v1/oona/contact',
       '/health',
       '/openapi.json',
@@ -50,33 +52,42 @@ describe('API base routes', () => {
 
     expect(body.paths['/'].get.operationId).toBe('getApiRoot')
     expect(body.paths['/'].get.tags).toEqual(['System'])
+    expect(body.paths['/'].get.security).toBeUndefined()
     expect(body.paths['/'].get.responses['200'].content['application/json'].example).toEqual({
       name: 'api',
       internal: 'girke-api',
       version: TEST_VERSION
     })
     expect(body.paths['/health'].get.operationId).toBe('getHealth')
+    expect(body.paths['/health'].get.security).toBeUndefined()
     expect(body.paths['/health'].get.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/HealthResponse'
     )
     expect(body.paths['/version'].get.operationId).toBe('getVersion')
+    expect(body.paths['/version'].get.security).toBeUndefined()
     expect(body.paths['/version'].get.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/VersionResponse'
     )
 
     expect(body.paths['/openapi.json'].get.operationId).toBe('getOpenApiDocument')
     expect(body.paths['/openapi.json'].get.tags).toEqual(['API Reference'])
+    expect(body.paths['/openapi.json'].get.security).toBeUndefined()
     expect(body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.tags).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'System' }),
         expect.objectContaining({ name: 'API Reference' }),
-        expect.objectContaining({ name: 'Oona Contact' })
+        expect.objectContaining({ name: 'Oona Contact' }),
+        expect.objectContaining({ name: 'Feeds' })
       ])
     )
+    expect(
+      body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/feeds']
+    ).toEqual({})
     expect(
       body.paths['/openapi.json'].get.responses['200'].content['application/json'].example.paths['/api/v1/oona/contact']
     ).toEqual({})
     expect(body.paths['/reference'].get.operationId).toBe('getApiReference')
+    expect(body.paths['/reference'].get.security).toBeUndefined()
     expect(body.paths['/reference'].get.responses['200'].content['text/html'].schema.$ref).toBe(
       '#/components/schemas/ScalarHtmlDocument'
     )
@@ -103,6 +114,19 @@ describe('API base routes', () => {
     expect(contactOperation.responses['400'].content['application/json'].example).toEqual({
       success: false,
       error: 'invalid_request'
+    })
+
+    expect(body.paths['/api/v1/feeds'].get.operationId).toBe('listFeeds')
+    expect(body.paths['/api/v1/feeds'].get.tags).toEqual(['Feeds'])
+    expect(body.paths['/api/v1/feeds'].get.security).toEqual([{ bearerAuth: [] }])
+    expect(body.paths['/api/v1/feeds'].get.responses['200'].content['application/json'].example).toEqual({
+      feeds: []
+    })
+    expect(body.paths['/api/v1/feeds'].get.responses['401'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/UnauthorizedErrorResponse'
+    )
+    expect(body.paths['/api/v1/feeds'].get.responses['401'].content['application/json'].example).toEqual({
+      error: 'unauthorized'
     })
   })
 
@@ -135,22 +159,35 @@ describe('API base routes', () => {
 
   test('protected routes require a valid Girke bearer token', async () => {
     const app = createTestApp()
-    const missing = await app.request('/api/v1/transcription/jobs')
-    expect(missing.status).toBe(401)
+    const missingFeeds = await app.request('/api/v1/feeds')
+    expect(missingFeeds.status).toBe(401)
+    expect(await missingFeeds.json()).toEqual({ error: 'unauthorized' })
 
-    const legacy = await app.request('/api/v1/transcription/jobs', {
+    const legacyFeeds = await app.request('/api/v1/feeds', {
       headers: { 'X-API-Key': 'girke_valid' }
     })
-    expect(legacy.status).toBe(401)
+    expect(legacyFeeds.status).toBe(401)
+    expect(await legacyFeeds.json()).toEqual({ error: 'unauthorized' })
 
-    const wrong = await app.request('/api/v1/transcription/jobs', {
+    const wrongFeeds = await app.request('/api/v1/feeds', {
       headers: { Authorization: 'Bearer girke_wrong' }
     })
-    expect(wrong.status).toBe(401)
+    expect(wrongFeeds.status).toBe(401)
+    expect(await wrongFeeds.json()).toEqual({ error: 'unauthorized' })
 
-    const valid = await app.request('/api/v1/transcription/jobs', {
+    const validFeeds = await app.request('/api/v1/feeds', {
       headers: authHeaders
     })
-    expect(valid.status).toBe(200)
+    expect(validFeeds.status).toBe(200)
+    expect(await validFeeds.json()).toEqual({ feeds: [] })
+
+    const missingTranscriptionJobs = await app.request('/api/v1/transcription/jobs')
+    expect(missingTranscriptionJobs.status).toBe(401)
+    expect(await missingTranscriptionJobs.json()).toEqual({ error: 'unauthorized' })
+
+    const validTranscriptionJobs = await app.request('/api/v1/transcription/jobs', {
+      headers: authHeaders
+    })
+    expect(validTranscriptionJobs.status).toBe(200)
   })
 })
