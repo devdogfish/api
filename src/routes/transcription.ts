@@ -121,10 +121,7 @@ export type TranscriptionSegment = {
   chunk_index?: number
 }
 
-export type TranscriptionResultSegment = {
-  start: number
-  end: number
-  text: string
+export type TranscriptionResultSegment = Omit<TranscriptionSegment, 'chunk_index'> & {
   chunk_index: number
 }
 
@@ -387,7 +384,21 @@ function createTranscriptionSyncMediaTooLongBody(maxDurationSeconds: number) {
   }
 }
 
-function serializeJob(job: TranscriptionJobRecord): TranscriptionJobSummaryResponse {
+function serializeTerminalJobError(status: 'failed' | 'cancelled', errorCode: TranscriptionJobErrorCode | null, errorMessage: string | null) {
+  if (status === 'cancelled') {
+    return {
+      code: errorCode ?? 'JOB_CANCELLED',
+      message: errorMessage ?? 'Job cancelled'
+    }
+  }
+
+  return {
+    code: errorCode ?? 'TRANSCRIPTION_WORKER_FAILED',
+    message: errorMessage ?? 'Transcription job failed'
+  }
+}
+
+function serializeJobSummary(job: TranscriptionJobRecord): TranscriptionJobSummaryResponse {
   const body: TranscriptionJobSummaryResponse = {
     job_id: job.publicId,
     status: job.status,
@@ -411,10 +422,7 @@ function serializeJob(job: TranscriptionJobRecord): TranscriptionJobSummaryRespo
   if (job.completedAt) body.completed_at = job.completedAt.toISOString()
   if (job.status === 'completed') body.result_url = jobUrls(job.publicId).result_url
   if (job.status === 'failed' || job.status === 'cancelled') {
-    body.error = {
-      code: job.errorCode ?? (job.status === 'cancelled' ? 'JOB_CANCELLED' : 'TRANSCRIPTION_WORKER_FAILED'),
-      message: job.errorMessage ?? (job.status === 'cancelled' ? 'Job cancelled' : 'Transcription job failed')
-    }
+    body.error = serializeTerminalJobError(job.status, job.errorCode, job.errorMessage)
   }
 
   return body
@@ -433,20 +441,20 @@ function serializeCreatedJob(job: TranscriptionJobRecord): TranscriptionJobCreat
 }
 
 function serializeJobStatus(job: TranscriptionJobRecord): TranscriptionJobStatusResponse {
-  return serializeJob(job) as TranscriptionJobStatusResponse
+  return transcriptionJobStatusResponseSchema.parse(serializeJobSummary(job))
 }
 
 function serializeCancelledJob(job: TranscriptionJobRecord): TranscriptionJobCancellationResponse {
-  return serializeJob(job) as TranscriptionJobCancellationResponse
+  return transcriptionJobCancellationResponseSchema.parse(serializeJobSummary(job))
 }
 
-function serializeResult(job: TranscriptionJobRecord): TranscriptionJobResultResponse | null {
+function serializeCompletedResult(job: TranscriptionJobRecord): TranscriptionJobResultResponse | null {
   if (job.status !== 'completed' || !job.resultJson) return null
-  return {
+  return transcriptionJobResultResponseSchema.parse({
     job_id: job.publicId,
     status: 'completed',
     ...job.resultJson
-  }
+  })
 }
 
 function webhookEvent(job: TranscriptionJobRecord) {
@@ -469,7 +477,7 @@ export function createTranscriptionWebhookDispatcher(opts: {
 
       const payload = {
         event: webhookEvent(job),
-        job: serializeJob(job)
+        job: serializeJobSummary(job)
       }
       const body = JSON.stringify(payload)
       const headers = new Headers({ 'content-type': 'application/json' })
@@ -1840,7 +1848,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
   app.openapi(listTranscriptionJobsRoute, async (c) => {
     const apiToken = c.get('apiToken')
     const jobs = await jobStore.listForToken(apiToken.id)
-    const responseBody: TranscriptionJobListResponse = { jobs: jobs.map(serializeJob) }
+    const responseBody: TranscriptionJobListResponse = { jobs: jobs.map(serializeJobSummary) }
     return c.json(responseBody, 200)
   })
 
@@ -1963,10 +1971,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
     if (job.status === 'failed') {
       return c.json(
         {
-          error: {
-            code: job.errorCode ?? 'TRANSCRIPTION_WORKER_FAILED',
-            message: job.errorMessage ?? 'Transcription job failed'
-          }
+          error: serializeTerminalJobError(job.status, job.errorCode, job.errorMessage)
         },
         422
       )
@@ -1975,7 +1980,7 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       return c.json({ error: 'job_cancelled' }, 410)
     }
 
-    const result = serializeResult(job)
+    const result = serializeCompletedResult(job)
     if (!result) {
       return c.json({ error: 'job_result_missing' }, 500)
     }
