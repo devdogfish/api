@@ -277,6 +277,25 @@ type TranscriptionJobSummaryResponse = z.infer<typeof transcriptionJobSummarySch
 type TranscriptionJobListResponse = z.infer<typeof transcriptionJobListResponseSchema>
 type TranscriptionJobCreateAcceptedResponse = z.infer<typeof transcriptionJobCreateAcceptedResponseSchema>
 
+function normalizeCreateJobField<T>(value: unknown, normalize: (value: FormDataEntryValue | null) => T | null) {
+  const normalized = normalize((value as FormDataEntryValue | undefined) ?? null)
+  return normalized === null ? value : normalized
+}
+
+function normalizeCreateJobWebhookUrlField(value: unknown) {
+  const normalized = normalizeWebhookUrl((value as FormDataEntryValue | undefined) ?? null)
+  if (normalized === null) return undefined
+  return normalized === false ? value : normalized
+}
+
+function createLiteralErrorSchema<Code extends string>(name: string, error: Code) {
+  return z
+    .object({
+      error: z.literal(error).openapi({ example: error })
+    })
+    .openapi(name)
+}
+
 function serializeJob(job: TranscriptionJobRecord): TranscriptionJobSummaryResponse {
   const body: TranscriptionJobSummaryResponse = {
     job_id: job.publicId,
@@ -308,6 +327,18 @@ function serializeJob(job: TranscriptionJobRecord): TranscriptionJobSummaryRespo
   }
 
   return body
+}
+
+function serializeCreatedJob(job: TranscriptionJobRecord): TranscriptionJobCreateAcceptedResponse {
+  return {
+    job_id: job.publicId,
+    status: 'queued',
+    level: job.level,
+    language: job.language,
+    detected_language: null,
+    created_at: job.createdAt.toISOString(),
+    ...jobUrls(job.publicId)
+  }
 }
 
 function serializeResult(job: TranscriptionJobRecord) {
@@ -829,29 +860,25 @@ const transcriptionJobCreateAcceptedResponseSchema = z
   })
   .openapi('TranscriptionJobCreateAcceptedResponse')
 
-const transcriptionJobCreateFileRequiredErrorSchema = z
-  .object({
-    error: z.literal('file_required').openapi({ example: 'file_required' })
-  })
-  .openapi('TranscriptionJobCreateFileRequiredErrorResponse')
+const transcriptionJobCreateFileRequiredErrorSchema = createLiteralErrorSchema(
+  'TranscriptionJobCreateFileRequiredErrorResponse',
+  'file_required'
+)
 
-const transcriptionJobCreateInvalidLevelErrorSchema = z
-  .object({
-    error: z.literal('invalid_level').openapi({ example: 'invalid_level' })
-  })
-  .openapi('TranscriptionJobCreateInvalidLevelErrorResponse')
+const transcriptionJobCreateInvalidLevelErrorSchema = createLiteralErrorSchema(
+  'TranscriptionJobCreateInvalidLevelErrorResponse',
+  'invalid_level'
+)
 
-const transcriptionJobCreateInvalidLanguageErrorSchema = z
-  .object({
-    error: z.literal('invalid_language').openapi({ example: 'invalid_language' })
-  })
-  .openapi('TranscriptionJobCreateInvalidLanguageErrorResponse')
+const transcriptionJobCreateInvalidLanguageErrorSchema = createLiteralErrorSchema(
+  'TranscriptionJobCreateInvalidLanguageErrorResponse',
+  'invalid_language'
+)
 
-const transcriptionJobCreateInvalidWebhookUrlErrorSchema = z
-  .object({
-    error: z.literal('invalid_webhook_url').openapi({ example: 'invalid_webhook_url' })
-  })
-  .openapi('TranscriptionJobCreateInvalidWebhookUrlErrorResponse')
+const transcriptionJobCreateInvalidWebhookUrlErrorSchema = createLiteralErrorSchema(
+  'TranscriptionJobCreateInvalidWebhookUrlErrorResponse',
+  'invalid_webhook_url'
+)
 
 const transcriptionJobCreateBadRequestResponseSchema = z
   .union([
@@ -877,11 +904,10 @@ const transcriptionJobCreateUploadTooLargeResponseSchema = z
   })
   .openapi('TranscriptionJobCreateUploadTooLargeResponse')
 
-const transcriptionJobCreateUnsupportedMediaResponseSchema = z
-  .object({
-    error: z.literal('unsupported_media_format').openapi({ example: 'unsupported_media_format' })
-  })
-  .openapi('TranscriptionJobCreateUnsupportedMediaResponse')
+const transcriptionJobCreateUnsupportedMediaResponseSchema = createLiteralErrorSchema(
+  'TranscriptionJobCreateUnsupportedMediaResponse',
+  'unsupported_media_format'
+)
 
 const transcriptionJobCreateMediaDurationExceededExample = {
   error: 'media_duration_exceeded',
@@ -900,18 +926,11 @@ const transcriptionJobCreateMediaDurationExceededResponseSchema = z
 
 const transcriptionInternalServerErrorExample = { error: 'internal_server_error' } as const
 
-const transcriptionInternalServerErrorResponseSchema = z
-  .object({
-    error: z.literal('internal_server_error').openapi({ example: transcriptionInternalServerErrorExample.error })
-  })
-  .openapi('InternalServerErrorResponse')
+const transcriptionInternalServerErrorResponseSchema = createLiteralErrorSchema('InternalServerErrorResponse', 'internal_server_error')
 
 const transcriptionJobCreateLevelFieldSchema = z
   .preprocess(
-    (value) => {
-      const normalized = normalizeLevel((value as FormDataEntryValue | undefined) ?? null)
-      return normalized === null ? value : normalized
-    },
+    (value) => normalizeCreateJobField(value, normalizeLevel),
     z.enum(TRANSCRIPTION_LEVELS).optional()
   )
   .transform((value) => value ?? DEFAULT_TRANSCRIPTION_LEVEL)
@@ -924,10 +943,7 @@ const transcriptionJobCreateLevelFieldSchema = z
 
 const transcriptionJobCreateLanguageFieldSchema = z
   .preprocess(
-    (value) => {
-      const normalized = normalizeLanguage((value as FormDataEntryValue | undefined) ?? null)
-      return normalized === null ? value : normalized
-    },
+    (value) => normalizeCreateJobField(value, normalizeLanguage),
     z.enum(TRANSCRIPTION_LANGUAGE_HINTS).optional()
   )
   .transform((value) => value ?? 'auto')
@@ -941,11 +957,7 @@ const transcriptionJobCreateLanguageFieldSchema = z
 
 const transcriptionJobCreateWebhookUrlFieldSchema = z
   .preprocess(
-    (value) => {
-      const normalized = normalizeWebhookUrl((value as FormDataEntryValue | undefined) ?? null)
-      if (normalized === null) return undefined
-      return normalized === false ? value : normalized
-    },
+    normalizeCreateJobWebhookUrlField,
     z
       .string()
       .url()
@@ -972,6 +984,29 @@ const transcriptionJobCreateRequestSchema = z
   .openapi('TranscriptionJobCreateRequest', {
     description: 'Multipart async Transcription Job creation fields.'
   })
+
+type TranscriptionJobCreateBadRequestResponse = z.infer<typeof transcriptionJobCreateBadRequestResponseSchema>
+
+const transcriptionJobCreateBadRequestBodies = {
+  file: { error: 'file_required' },
+  level: { error: 'invalid_level' },
+  language: { error: 'invalid_language' },
+  webhook_url: { error: 'invalid_webhook_url' }
+} as const satisfies Record<string, TranscriptionJobCreateBadRequestResponse>
+
+const transcriptionJobCreateBadRequestFieldOrder = ['file', 'level', 'language', 'webhook_url'] as const
+
+function getTranscriptionJobCreateBadRequestBody(issues: z.ZodIssue[]): TranscriptionJobCreateBadRequestResponse {
+  const fieldErrors = new Set(issues.map((issue) => String(issue.path[0] ?? '')))
+
+  for (const field of transcriptionJobCreateBadRequestFieldOrder) {
+    if (fieldErrors.has(field)) {
+      return transcriptionJobCreateBadRequestBodies[field]
+    }
+  }
+
+  return transcriptionJobCreateBadRequestBodies.file
+}
 
 const listTranscriptionJobsRoute = createRoute({
   method: 'get',
@@ -1129,35 +1164,12 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
       })
       worker?.enqueue(job.publicId)
 
-      const responseBody: TranscriptionJobCreateAcceptedResponse = {
-        job_id: job.publicId,
-        status: 'queued',
-        level: job.level,
-        language: job.language,
-        detected_language: null,
-        created_at: job.createdAt.toISOString(),
-        ...jobUrls(job.publicId)
-      }
-
-      return c.json(responseBody, 202)
+      return c.json(serializeCreatedJob(job), 202)
     },
     (result, c) => {
       if (result.success) return
 
-      const fieldErrors = new Set(result.error.issues.map((issue) => String(issue.path[0] ?? '')))
-      if (fieldErrors.has('file')) {
-        return c.json({ error: 'file_required' }, 400)
-      }
-      if (fieldErrors.has('level')) {
-        return c.json({ error: 'invalid_level' }, 400)
-      }
-      if (fieldErrors.has('language')) {
-        return c.json({ error: 'invalid_language' }, 400)
-      }
-      if (fieldErrors.has('webhook_url')) {
-        return c.json({ error: 'invalid_webhook_url' }, 400)
-      }
-      return c.json({ error: 'file_required' }, 400)
+      return c.json(getTranscriptionJobCreateBadRequestBody(result.error.issues), 400)
     }
   )
 

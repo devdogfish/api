@@ -287,6 +287,42 @@ describe('transcription capability', () => {
     expect(await invalidLanguage.json()).toEqual({ error: 'invalid_language' })
   })
 
+  test('preserves async job create validation errors for bad multipart fields', async () => {
+    const app = createApp({ apiTokenStore: testApiTokenStore(), version: 'test-version' })
+
+    const missingFile = await app.request('/api/v1/transcription/jobs', {
+      method: 'POST',
+      headers: authHeaders,
+      body: new FormData()
+    })
+    expect(missingFile.status).toBe(400)
+    expect(await missingFile.json()).toEqual({ error: 'file_required' })
+
+    const invalidLevel = await app.request('/api/v1/transcription/jobs', {
+      method: 'POST',
+      headers: authHeaders,
+      body: makeForm({ level: 'ultra' })
+    })
+    expect(invalidLevel.status).toBe(400)
+    expect(await invalidLevel.json()).toEqual({ error: 'invalid_level' })
+
+    const invalidLanguage = await app.request('/api/v1/transcription/jobs', {
+      method: 'POST',
+      headers: authHeaders,
+      body: makeForm({ language: 'french' })
+    })
+    expect(invalidLanguage.status).toBe(400)
+    expect(await invalidLanguage.json()).toEqual({ error: 'invalid_language' })
+
+    const invalidWebhook = await app.request('/api/v1/transcription/jobs', {
+      method: 'POST',
+      headers: authHeaders,
+      body: makeForm({ webhook_url: 'http://hooks.test/transcription' })
+    })
+    expect(invalidWebhook.status).toBe(400)
+    expect(await invalidWebhook.json()).toEqual({ error: 'invalid_webhook_url' })
+  })
+
   test('creates async jobs and exposes completed results', async () => {
     const uploadDir = await makeUploadDir()
     const calls: Array<{ level: FormDataEntryValue | null; language: FormDataEntryValue | null; file: FormDataEntryValue | null }> = []
