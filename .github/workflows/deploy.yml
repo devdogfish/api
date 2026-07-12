@@ -22,6 +22,8 @@ jobs:
     env:
       DEPLOY_PATH: /home/ubuntu/api
       PRODUCTION_HEALTH_URL: https://api.girke.dev/health
+      PRODUCTION_OPENAPI_URL: https://api.girke.dev/openapi.json
+      PRODUCTION_REFERENCE_URL: https://api.girke.dev/reference
       PRODUCTION_VERSION_URL: https://api.girke.dev/version
       REPOSITORY_URL: https://github.com/devdogfish/api.git
 
@@ -58,8 +60,9 @@ jobs:
           docker compose config --quiet
           docker compose build girke-api whisper
           docker compose up -d postgres
-          docker compose run --rm --no-deps girke-api bun run db:migrate
-          docker compose up -d --build
+          docker compose run --rm --no-deps -T girke-api bun run db:migrate
+          docker compose up -d --no-deps --force-recreate whisper
+          docker compose up -d --no-deps --force-recreate girke-api
           docker image prune -f
           REMOTE
 
@@ -68,3 +71,5 @@ jobs:
           set -euo pipefail
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_HEALTH_URL" | grep '"ok":true'
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_VERSION_URL" >/dev/null
+          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_OPENAPI_URL" | grep '"openapi":"3.1.0"'
+          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_REFERENCE_URL" | grep '/openapi.json'
