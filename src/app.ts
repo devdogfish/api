@@ -20,6 +20,8 @@ import {
   type SenderFetch,
   type SmtpConfig
 } from './routes/oonaContact'
+import { ocrRoutes } from './routes/ocr'
+import type { OcrProcessor } from './ocr/ocrProcessor'
 import { TRANSCRIPTION_BASE_PATH } from './routes/transcriptionContract'
 import { registerSystemRoutes } from './routes/system'
 
@@ -42,6 +44,9 @@ export type AppConfig = {
   transcriptionWebhookSecret?: string
   transcriptionWebhookMaxAttempts?: number
   transcriptionWebhookRetryBaseDelayMs?: number
+  ocrProcessor?: OcrProcessor
+  ocrMaxUploadBytes?: number
+  ocrTimeoutMs?: number
   sender?: SenderConfig
   senderFetch?: SenderFetch
   smtp?: SmtpConfig
@@ -89,6 +94,14 @@ export function createApp(config: AppConfig) {
     })
   )
   registerTranscriptionWebhooks(app)
+  app.route(
+    '/api/v1/ocr',
+    ocrRoutes({
+      processor: config.ocrProcessor,
+      maxUploadBytes: config.ocrMaxUploadBytes,
+      timeoutMs: config.ocrTimeoutMs
+    })
+  )
   app.route('/api/v1/feeds', feedRoutes())
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404))

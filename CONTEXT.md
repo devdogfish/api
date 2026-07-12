@@ -59,3 +59,11 @@ _Avoid_: YAML spec when referring to the runtime API contract.
 **API Reference**:
 The browsable documentation UI generated from the OpenAPI document. It describes how to call the API but does not grant access to protected data.
 _Avoid_: Swagger when referring to the general documentation experience.
+
+**OCR Recognition**:
+A synchronous image-to-text request that returns extracted text during the same HTTP request. Girke API does not treat OCR recognition as a job unless an async workflow is explicitly added later.
+_Avoid_: OCR Job for the sync-only workflow.
+
+**OCR Language Hint**:
+An optional client-provided OCR language preference. `auto` means Girke API chooses the best general Latin-script recognition strategy and is the default when omitted.
+_Avoid_: Required language.

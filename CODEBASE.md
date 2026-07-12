@@ -14,4 +14,6 @@ Permanent Girke API service for `api.girke.dev`. Separate from the LLM Wiki API.
 - `GET /api/v1/transcription/jobs/:job_id` — job status/progress, owner-only.
 - `GET /api/v1/transcription/jobs/:job_id/result` — completed transcript result, owner-only.
 - `DELETE /api/v1/transcription/jobs/:job_id` — cancel queued/processing job, owner-only.
+- `GET /api/v1/ocr` — OCR metadata, requires `Authorization: Bearer girke_...`.
+- `POST /api/v1/ocr` — sync OCR for one supported image, requires `Authorization: Bearer girke_...`.
 - `GET /api/v1/feeds/` — feed list placeholder, requires `Authorization: Bearer girke_...`.

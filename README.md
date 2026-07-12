@@ -56,6 +56,8 @@ Protected routes requiring `Authorization: Bearer girke_...`:
 - `GET /api/v1/transcription/jobs/:job_id` — read async job status/progress.
 - `GET /api/v1/transcription/jobs/:job_id/result` — read completed transcript result.
 - `DELETE /api/v1/transcription/jobs/:job_id` — cancel queued/processing async job.
+- `GET /api/v1/ocr` — OCR capability metadata: fixed model, timeout, upload limit, accepted image formats.
+- `POST /api/v1/ocr` — synchronous multipart OCR for one supported image.
 - `GET /api/v1/feeds` — placeholder feed list, currently returns `{ feeds: [] }`.
 
 Internal Docker-only sidecar routes, not public internet endpoints:
@@ -145,6 +147,59 @@ Transcription response body:
   "language": "auto",
   "detected_language": "en",
   "model": "distil-small.en"
+}
+```
+
+## OCR recognition
+
+Protected synchronous OCR endpoint for one image:
+
+```text
+POST https://api.girke.dev/api/v1/ocr
+Authorization: Bearer girke_...
+Content-Type: multipart/form-data
+```
+
+Multipart fields:
+
+```text
+file=image file, required
+```
+
+Accepted input formats:
+
+```text
+jpg, jpeg, png, webp, tif, tiff, bmp
+```
+
+OCR uses the fixed `tesseract-latin-psm11-gray` strategy with a 20 second processing timeout.
+
+Metadata:
+
+```text
+GET https://api.girke.dev/api/v1/ocr
+Authorization: Bearer girke_...
+```
+
+Response body:
+
+```json
+{
+  "model": "tesseract-latin-psm11-gray",
+  "timeout_seconds": 20,
+  "max_upload_bytes": 26214400,
+  "accepted_image_formats": ["jpg", "jpeg", "png", "webp", "tif", "tiff", "bmp"]
+}
+```
+
+OCR response body:
+
+```json
+{
+  "text": "LOT 1234\nBest before 2027",
+  "lines": ["LOT 1234", "Best before 2027"],
+  "processing_seconds": 2.6,
+  "model": "tesseract-latin-psm11-gray"
 }
 ```
 

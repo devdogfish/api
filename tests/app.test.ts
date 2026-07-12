@@ -8,11 +8,13 @@ const expectedOpenApiTags = expect.arrayContaining([
   expect.objectContaining({ name: 'API Reference' }),
   expect.objectContaining({ name: 'Oona Contact' }),
   expect.objectContaining({ name: 'Feeds' }),
-  expect.objectContaining({ name: 'Transcription' })
+  expect.objectContaining({ name: 'Transcription' }),
+  expect.objectContaining({ name: 'OCR' })
 ])
 const expectedOpenApiPaths = [
   '/',
   '/api/v1/feeds',
+  '/api/v1/ocr',
   '/api/v1/oona/contact',
   '/api/v1/transcription',
   '/api/v1/transcription/jobs',
@@ -147,6 +149,25 @@ const expectedOpenApiOperations = [
     tag: 'Feeds',
     security: expectedBearerSecurity,
     responseStatusCodes: ['200', '401'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/ocr',
+    method: 'get',
+    operationId: 'getOcrMetadata',
+    tag: 'OCR',
+    security: expectedBearerSecurity,
+    responseStatusCodes: ['200', '401'],
+    responseContentTypes: ['application/json']
+  },
+  {
+    path: '/api/v1/ocr',
+    method: 'post',
+    operationId: 'recognizeOcrText',
+    tag: 'OCR',
+    security: expectedBearerSecurity,
+    requestContentTypes: ['multipart/form-data'],
+    responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502', '504'],
     responseContentTypes: ['application/json']
   },
   {
@@ -423,6 +444,50 @@ describe('API base routes', () => {
       error: 'unauthorized'
     })
 
+    const ocrMetadataOperation = getOpenApiOperation(body, '/api/v1/ocr', 'get')
+    expect(ocrMetadataOperation.operationId).toBe('getOcrMetadata')
+    expect(ocrMetadataOperation.tags).toEqual(['OCR'])
+    expect(ocrMetadataOperation.security).toEqual(expectedBearerSecurity)
+    expect(ocrMetadataOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/OcrMetadataResponse'
+    )
+    expect(body.components.schemas.OcrMetadataResponse.properties.model.example).toBe('tesseract-latin-psm11-gray')
+    expect(body.components.schemas.OcrMetadataResponse.properties.timeout_seconds.example).toBe(20)
+    expect(body.components.schemas.OcrMetadataResponse.properties.accepted_image_formats.items.enum).toEqual([
+      'jpg',
+      'jpeg',
+      'png',
+      'webp',
+      'tif',
+      'tiff',
+      'bmp'
+    ])
+
+    const ocrRecognizeOperation = getOpenApiOperation(body, '/api/v1/ocr', 'post')
+    const ocrRecognizeRequestBody = getRequestBody(ocrRecognizeOperation, 'OCR recognition')
+    expect(ocrRecognizeOperation.operationId).toBe('recognizeOcrText')
+    expect(ocrRecognizeOperation.tags).toEqual(['OCR'])
+    expect(ocrRecognizeOperation.security).toEqual(expectedBearerSecurity)
+    expect(ocrRecognizeRequestBody.required).toBe(true)
+    expect(ocrRecognizeRequestBody.content['multipart/form-data'].schema.$ref).toBe('#/components/schemas/OcrRequest')
+    expect(Object.keys(ocrRecognizeOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502', '504'])
+    expect(ocrRecognizeOperation.responses['200'].content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/OcrResponse'
+    )
+    expect(ocrRecognizeOperation.responses['400'].content['application/json'].example).toEqual({ error: 'file_required' })
+    expect(ocrRecognizeOperation.responses['413'].content['application/json'].example).toEqual({
+      error: 'upload_too_large',
+      max_bytes: 26214400
+    })
+    expect(ocrRecognizeOperation.responses['415'].content['application/json'].example).toEqual({
+      error: 'unsupported_image_format'
+    })
+    expect(ocrRecognizeOperation.responses['504'].content['application/json'].example).toEqual({ error: 'ocr_timed_out' })
+    expect(body.components.schemas.OcrRequest.required).toEqual(['file'])
+    expect(body.components.schemas.OcrRequest.properties.file.type).toBe('string')
+    expect(body.components.schemas.OcrRequest.properties.file.format).toBe('binary')
+    expect(body.components.schemas.OcrResponse.required.sort()).toEqual(['lines', 'model', 'processing_seconds', 'text'])
+
     const transcriptionOperation = getOpenApiOperation(body, '/api/v1/transcription', 'get')
     expect(transcriptionOperation.operationId).toBe('getTranscriptionMetadata')
     expect(transcriptionOperation.tags).toEqual(['Transcription'])
@@ -693,6 +758,10 @@ describe('API base routes', () => {
     expect(missingTranscriptionMetadata.status).toBe(401)
     expect(await missingTranscriptionMetadata.json()).toEqual({ error: 'unauthorized' })
 
+    const missingOcrMetadata = await app.request('/api/v1/ocr')
+    expect(missingOcrMetadata.status).toBe(401)
+    expect(await missingOcrMetadata.json()).toEqual({ error: 'unauthorized' })
+
     const legacyFeeds = await app.request('/api/v1/feeds', {
       headers: { 'X-API-Key': 'girke_valid' }
     })
@@ -715,6 +784,11 @@ describe('API base routes', () => {
       headers: authHeaders
     })
     expect(validTranscriptionMetadata.status).toBe(200)
+
+    const validOcrMetadata = await app.request('/api/v1/ocr', {
+      headers: authHeaders
+    })
+    expect(validOcrMetadata.status).toBe(200)
 
     const missingTranscriptionJobs = await app.request('/api/v1/transcription/jobs')
     expect(missingTranscriptionJobs.status).toBe(401)
