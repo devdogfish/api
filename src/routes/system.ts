@@ -13,6 +13,7 @@ import {
   BEARER_SECURITY_SCHEME,
   createJsonResponse,
   createOpenApiDocumentConfig,
+  LLMS_DOCUMENT_PATH,
   OPENAPI_TAGS,
   OPENAPI_DOCUMENT_PATH,
   OPENAPI_VERSION,
@@ -21,6 +22,8 @@ import {
 
 const VERSION_EXAMPLE = 'test-version'
 const SCALAR_HTML_EXAMPLE = '<!doctype html><html></html>'
+const LLMS_TXT_EXAMPLE = '# Girke API\n\n## Documentation\n\n- [OpenAPI JSON](/openapi.json): canonical contract.'
+const LLMS_DOCUMENT_FILE = Bun.file(new URL('../../CODEBASE.md', import.meta.url))
 const HEALTH_RESPONSE = { ok: true } as const
 const noopNext = async () => undefined
 
@@ -78,6 +81,7 @@ const openApiDocumentExamplePaths = createOpenApiDocumentExampleSection([
   '/health',
   '/version',
   OPENAPI_DOCUMENT_PATH,
+  LLMS_DOCUMENT_PATH,
   API_REFERENCE_PATH
 ])
 
@@ -106,6 +110,7 @@ const openApiDocumentSchema = z
   .openapi('OpenApiDocument')
 
 const scalarHtmlSchema = z.string().openapi({ example: SCALAR_HTML_EXAMPLE }).openapi('ScalarHtmlDocument')
+const llmsTextSchema = z.string().openapi({ example: LLMS_TXT_EXAMPLE }).openapi('LlmsTxtDocument')
 
 type StaticJsonResponse =
   | ReturnType<typeof createRootResponse>
@@ -246,6 +251,28 @@ export function registerSystemRoutes(app: OpenAPIHono<AppEnv>, version: string) 
       return response ?? c.html('', 200)
     }
   )
+
+  app.openapi(
+    createRoute({
+      method: 'get',
+      path: LLMS_DOCUMENT_PATH,
+      operationId: 'getLlmsDocumentation',
+      tags: [API_REFERENCE_TAG.name],
+      summary: 'Get LLM-readable API documentation',
+      description: 'Returns a concise Markdown index that points agents to the canonical OpenAPI contract.',
+      responses: {
+        200: {
+          description: 'Concise LLM-readable Markdown API documentation index.',
+          content: {
+            'text/plain': {
+              schema: llmsTextSchema
+            }
+          }
+        }
+      }
+    }),
+    async (c) => c.text(await LLMS_DOCUMENT_FILE.text(), 200)
+  )
 }
 
-export { API_REFERENCE_PATH, BEARER_SECURITY_SCHEME, OPENAPI_DOCUMENT_PATH }
+export { API_REFERENCE_PATH, BEARER_SECURITY_SCHEME, LLMS_DOCUMENT_PATH, OPENAPI_DOCUMENT_PATH }

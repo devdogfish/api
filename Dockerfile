@@ -11,7 +11,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr tesseract-ocr-script-latn \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
-COPY package.json tsconfig.json drizzle.config.ts ./
+COPY package.json tsconfig.json drizzle.config.ts CODEBASE.md ./
 COPY src ./src
 COPY scripts ./scripts
 COPY drizzle ./drizzle

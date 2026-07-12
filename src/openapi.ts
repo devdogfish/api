@@ -8,6 +8,7 @@ export const API_INTERNAL_NAME = 'girke-api'
 export const API_REFERENCE_PAGE_TITLE = 'Girke API Reference'
 export const OPENAPI_DOCUMENT_PATH = '/openapi.json'
 export const API_REFERENCE_PATH = '/reference'
+export const LLMS_DOCUMENT_PATH = '/llms.txt'
 export const BEARER_SECURITY_SCHEME = 'bearerAuth'
 export const SYSTEM_TAG = {
   name: 'System',
@@ -15,7 +16,7 @@ export const SYSTEM_TAG = {
 } as const
 export const API_REFERENCE_TAG = {
   name: 'API Reference',
-  description: 'Public OpenAPI JSON and Scalar API reference routes.'
+  description: 'Public OpenAPI JSON, Scalar API reference, and machine-readable API documentation routes.'
 } as const
 export const OONA_CONTACT_TAG = {
   name: 'Oona Contact',

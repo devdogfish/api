@@ -22,6 +22,7 @@ const expectedOpenApiPaths = [
   '/api/v1/transcription/jobs/{job_id}/result',
   '/api/v1/transcription/transcribe',
   '/health',
+  '/llms.txt',
   '/openapi.json',
   '/reference',
   '/version'
@@ -124,6 +125,14 @@ const expectedOpenApiOperations = [
     tag: 'API Reference',
     responseStatusCodes: ['200'],
     responseContentTypes: ['application/json']
+  },
+  {
+    path: '/llms.txt',
+    method: 'get',
+    operationId: 'getLlmsDocumentation',
+    tag: 'API Reference',
+    responseStatusCodes: ['200'],
+    responseContentTypes: ['text/plain']
   },
   {
     path: '/reference',
@@ -398,6 +407,14 @@ describe('API base routes', () => {
     expect(openApiDocumentPaths['/api/v1/feeds']).toEqual({})
     expect(openApiDocumentPaths['/api/v1/transcription']).toEqual({})
     expect(openApiDocumentPaths['/api/v1/oona/contact']).toEqual({})
+    expect(openApiDocumentPaths['/llms.txt']).toEqual({})
+    const llmsDocumentOperation = getOpenApiOperation(body, '/llms.txt', 'get')
+    expect(llmsDocumentOperation.operationId).toBe('getLlmsDocumentation')
+    expect(llmsDocumentOperation.security).toBeUndefined()
+    expect(llmsDocumentOperation.responses['200'].content['text/plain'].schema.$ref).toBe(
+      '#/components/schemas/LlmsTxtDocument'
+    )
+    expect(body.components.schemas.LlmsTxtDocument.type).toBe('string')
     const referenceOperation = getOpenApiOperation(body, '/reference', 'get')
     expect(referenceOperation.operationId).toBe('getApiReference')
     expect(referenceOperation.security).toBeUndefined()
@@ -732,6 +749,27 @@ describe('API base routes', () => {
     expect(body).toContain('<!doctype html>')
     expect(body).toContain('/openapi.json')
     expect(body).toContain('Girke API Reference')
+  })
+
+  test('GET /llms.txt returns concise public Markdown index', async () => {
+    const app = createTestApp()
+    const res = await app.request('/llms.txt')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/plain')
+
+    const body = await res.text()
+    const expectedBody = await Bun.file(new URL('../CODEBASE.md', import.meta.url)).text()
+    expect(body).toBe(expectedBody)
+    expect(body).toContain('Girke API')
+    expect(body).toContain('/openapi.json')
+    expect(body).toContain('/reference')
+    expect(body).toContain('/api/v1/feeds')
+    expect(body).toContain('/api/v1/ocr')
+    expect(body).toContain('/api/v1/transcription/jobs/{job_id}/result')
+    expect(body).toContain('transcription.job.completed')
+    expect(body).toContain('bearerAuth')
+    expect(body.length).toBeLessThan(3000)
   })
 
   test('GET /health returns ok without auth', async () => {

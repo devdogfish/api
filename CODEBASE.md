@@ -1,19 +1,42 @@
-# API
+# Girke API LLM Guide
 
-Permanent Girke API service for `api.girke.dev`. Separate from the LLM Wiki API.
+Public API contract for Girke API.
+
+## Documentation
+
+- [OpenAPI JSON](/openapi.json): canonical OpenAPI 3.1 contract for schemas, status codes, and webhooks.
+- [API Reference](/reference): interactive Scalar documentation.
+
+## Auth
+
+Protected endpoints use `bearerAuth`: `Authorization: Bearer <API Token>`.
 
 ## Endpoints
 
-- `GET /` — service name/version.
-- `GET /health` — lightweight health check, no auth.
-- `GET /version` — deployed app version, no auth.
-- `POST /api/v1/oona/contact` — public Oona Kokopelli Carrd contact form proxy; sends contact email through Sender and optionally subscribes to the configured Sender group. CORS allows `https://gallery.oonakokopelli.com`.
-- `POST /api/v1/transcription/transcribe` — sync transcription for short media, requires `Authorization: Bearer girke_...`.
-- `GET /api/v1/transcription/jobs` — list token-owned transcription jobs, requires `Authorization: Bearer girke_...`.
-- `POST /api/v1/transcription/jobs` — create async transcription job, optional `webhook_url`, requires `Authorization: Bearer girke_...`.
-- `GET /api/v1/transcription/jobs/:job_id` — job status/progress, owner-only.
-- `GET /api/v1/transcription/jobs/:job_id/result` — completed transcript result, owner-only.
-- `DELETE /api/v1/transcription/jobs/:job_id` — cancel queued/processing job, owner-only.
-- `GET /api/v1/ocr` — OCR metadata, requires `Authorization: Bearer girke_...`.
-- `POST /api/v1/ocr` — sync OCR for one supported image, requires `Authorization: Bearer girke_...`.
-- `GET /api/v1/feeds/` — feed list placeholder, requires `Authorization: Bearer girke_...`.
+- `GET /`: public service identity and runtime version metadata.
+- `GET /health`: public liveness check for deployment and proxy monitoring.
+- `GET /version`: public deployed app version for release verification.
+- `GET /openapi.json`: canonical OpenAPI 3.1 spec with schemas, responses, and webhooks.
+- `GET /llms.txt`: compact agent index pointing to docs and route inventory.
+- `GET /reference`: Scalar browser UI for humans exploring the API contract.
+- `POST /api/v1/oona/contact`: public contact form proxy; validates input, sends email, and optionally subscribes.
+- `GET /api/v1/feeds`: protected feed capability list for authenticated API clients.
+- `GET /api/v1/ocr`: protected OCR metadata, including model, timeout, and accepted image formats.
+- `POST /api/v1/ocr`: protected image OCR upload; returns recognized text and line-level results.
+- `GET /api/v1/transcription`: protected transcription metadata, including levels, language hints, and media formats.
+- `POST /api/v1/transcription/transcribe`: protected synchronous media transcription for shorter audio or video files.
+- `GET /api/v1/transcription/jobs`: protected async transcription job list for the current token.
+- `POST /api/v1/transcription/jobs`: protected async transcription upload; creates a queued background job.
+- `GET /api/v1/transcription/jobs/{job_id}`: protected status and progress lookup for one transcription job.
+- `DELETE /api/v1/transcription/jobs/{job_id}`: protected cancellation for queued or processing transcription jobs.
+- `GET /api/v1/transcription/jobs/{job_id}/result`: protected final transcript retrieval; also reports pending, failed, or cancelled states.
+
+## Webhooks
+
+Use webhooks with async transcription jobs when clients need terminal job updates without polling.
+
+- `transcription.job.completed`
+- `transcription.job.failed`
+- `transcription.job.cancelled`
+
+For full endpoint details, read /openapi.json.
