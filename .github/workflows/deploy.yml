@@ -37,7 +37,7 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          printf '%s\n' '72.60.27.33 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL5LxaEZRNiTrRJNdNSBJ8bcLa3YVHSGtU7AxYvYMEFo' >> ~/.ssh/known_hosts
 
       - name: Deploy
         env:

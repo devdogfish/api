@@ -28,6 +28,8 @@ services:
 
 volumes:
   caddy_data:
+    external: true
     name: girke_caddy_data
   caddy_config:
+    external: true
     name: girke_caddy_config
