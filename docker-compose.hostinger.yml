@@ -1,0 +1,33 @@
+services:
+  caddy:
+    container_name: girke-caddy
+    image: caddy:2-alpine
+    depends_on:
+      - girke-api
+      - boards
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - girke-edge
+    restart: unless-stopped
+
+  boards:
+    container_name: youtube-strategy-boards
+    image: nginx:alpine
+    volumes:
+      - ${YOUTUBE_STRATEGY_BOARDS_PATH:-/root/youtube_strategy_boards}:/usr/share/nginx/html:ro
+    networks:
+      - girke-edge
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+    name: girke_caddy_data
+  caddy_config:
+    name: girke_caddy_config

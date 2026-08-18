@@ -1,0 +1,22 @@
+api.girke.dev {
+	encode zstd gzip
+
+	@youtubeStrategyFiles path /youtube-strategy-files/* /files/* /boards/*
+	header @youtubeStrategyFiles Access-Control-Allow-Origin "*"
+	header @youtubeStrategyFiles Access-Control-Allow-Methods "GET, OPTIONS"
+	header @youtubeStrategyFiles Access-Control-Allow-Headers "*"
+
+	handle_path /youtube-strategy-files/* {
+		reverse_proxy boards:80
+	}
+
+	handle_path /files/* {
+		reverse_proxy boards:80
+	}
+
+	handle_path /boards/* {
+		reverse_proxy boards:80
+	}
+
+	reverse_proxy girke-api:3000
+}
