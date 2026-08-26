@@ -4,36 +4,44 @@ Permanent service for `api.girke.dev`, separate from the LLM Wiki app/API. The o
 
 ## Layout
 
-- Repo: `/home/ubuntu/api`
+- Host: Hostinger VPS (`ssh hostinger-vps`)
+- Repo: `/root/api`
 - API: Hono/TypeScript in `src/`
 - Postgres: Docker Compose service `girke-api-postgres`
 - Whisper sidecar: FastAPI service `girke-api-whisper`
+- Public Caddy: Docker Compose service `girke-caddy`
 - Route overview: `CODEBASE.md`
 
 ## Secrets/config
 
-- Runtime env file: `/home/ubuntu/api/.env`
+- Runtime env file: `/root/api/.env`
 - API auth: Girke bearer tokens in Postgres. Create/revoke with `bun run tokens:create <name>` and `bun run tokens:revoke <id>`.
 - Do not commit `.env`.
 
 ## Operations
 
 ```bash
-cd /home/ubuntu/api
+cd /root/api
 export PATH="$HOME/.bun/bin:$PATH"
 bun test
 bun run typecheck
-docker compose up -d postgres
-docker compose run --build --rm girke-api bun run db:migrate
-docker compose run --build --rm girke-api bun run tokens:create <name>
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d postgres
+docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --build --rm girke-api bun run db:migrate
+docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --build --rm girke-api bun run tokens:create <name>
+docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d --build
 ```
 
-Database migrations are generated in `drizzle/`. Token values are printed once; only hashes are stored.
+Database migrations are generated in `drizzle/`. Token values are printed once;
+only hashes are stored. Pushing `main` deploys the exact revision to Hostinger
+through GitHub Actions and verifies both API and Quantself public endpoints.
 
 ## Public routing
 
-Caddy routes `api.girke.dev` to Docker service `girke-api:3000` on the existing external Docker network `llmwiki`. No random public app port is opened. DNS and TLS are live for `https://api.girke.dev`.
+Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and
+`dashboard.girke.dev` to Quantself's `quantself-web:3000` over the shared
+external Docker network `girke-edge`. No random public app ports are opened.
+DNS and TLS are live for both domains. Wiki, n8n, and Excalidraw remain on the
+Oracle VPS and are not managed by this repository.
 
 ## Endpoint inventory
 
@@ -104,7 +112,8 @@ video: mp4, mov, mkv, webm, avi
 
 The sidecar normalizes every accepted upload through a shared `ffmpeg` helper before model inference: audio is extracted if needed, video streams are dropped, and the model receives mono 16 kHz WAV.
 
-Current CPU-only ARM64 model tiers were benchmarked locally with `faster-whisper`, `int8`, and 4 CPU threads:
+Current CPU-only model tiers were benchmarked with `faster-whisper`, `int8`, and
+4 CPU threads:
 
 - `low`: `base` — fastest reliable tier; better than `tiny` on German in local tests.
 - `medium`: English `distil-small.en`, German/auto `small` — good output while still practical on CPU.
