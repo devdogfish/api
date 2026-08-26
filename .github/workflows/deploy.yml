@@ -21,6 +21,7 @@ jobs:
 
     env:
       DEPLOY_PATH: /root/api
+      PRODUCTION_DASHBOARD_URL: https://dashboard.girke.dev
       PRODUCTION_HEALTH_URL: https://api.girke.dev/health
       PRODUCTION_OPENAPI_URL: https://api.girke.dev/openapi.json
       PRODUCTION_REFERENCE_URL: https://api.girke.dev/reference
@@ -58,6 +59,10 @@ jobs:
           git checkout -B main FETCH_HEAD
           git reset --hard FETCH_HEAD
           docker compose -f docker-compose.yml -f docker-compose.hostinger.yml config --quiet
+          docker run --rm --network none \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           docker compose -f docker-compose.yml -f docker-compose.hostinger.yml build girke-api whisper
           docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d postgres
           docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --rm --no-deps -T girke-api bun run db:migrate < /dev/null
@@ -74,3 +79,5 @@ jobs:
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_VERSION_URL" >/dev/null
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_OPENAPI_URL" | grep '"openapi":"3.1.0"'
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_REFERENCE_URL" | grep '/openapi.json'
+          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_DASHBOARD_URL" >/dev/null
+          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "${PRODUCTION_DASHBOARD_URL%/}/api/health" >/dev/null

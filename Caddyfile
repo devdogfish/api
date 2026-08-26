@@ -20,3 +20,8 @@ api.girke.dev {
 
 	reverse_proxy girke-api:3000
 }
+
+dashboard.girke.dev {
+	encode zstd gzip
+	reverse_proxy quantself-web:3000
+}
