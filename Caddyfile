@@ -23,5 +23,19 @@ api.girke.dev {
 
 dashboard.girke.dev {
 	encode zstd gzip
-	reverse_proxy quantself-web:3000
+
+	@portfolioAnalytics {
+		method POST
+		path /api/v1/website-analytics/events
+	}
+	handle @portfolioAnalytics {
+		request_body {
+			max_size 64KiB
+		}
+		reverse_proxy quantself-analytics-relay:4311
+	}
+
+	handle {
+		reverse_proxy quantself-web:3000
+	}
 }

@@ -31,6 +31,10 @@ Protected endpoints use `bearerAuth`: `Authorization: Bearer <API Token>`.
 - `DELETE /api/v1/transcription/jobs/{job_id}`: protected cancellation for queued or processing transcription jobs.
 - `GET /api/v1/transcription/jobs/{job_id}/result`: protected final transcript retrieval; also reports pending, failed, or cancelled states.
 
+## Dashboard edge routes
+
+- `POST https://dashboard.girke.dev/api/v1/website-analytics/events` forwards portfolio batches to the private analytics relay. Requires the relay’s dedicated `X-API-Key`.
+
 ## Webhooks
 
 Use webhooks with async transcription jobs when clients need terminal job updates without polling.
