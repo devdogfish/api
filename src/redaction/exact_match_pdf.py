@@ -21,6 +21,7 @@ from pypdf import PdfReader, PdfWriter
 
 from paddle_scan import PaddleScan
 from person_names import PersonNames
+from phone_numbers import PhoneNumbers
 from placeholder_pixels import apply_patches, subtract
 from structured_identifiers import structured_matches, structured_value
 
@@ -56,7 +57,7 @@ def contains(sequence, term):
     return next(matching_starts(sequence, term), None) is not None
 
 
-def settings(directory, person_names=False):
+def settings(directory, additional_detector=False):
     request = json.loads((directory / "dictionary.json").read_text())
     language = request["language"]
     require(language in ("eng", "deu"), "unsupported OCR language")
@@ -64,7 +65,7 @@ def settings(directory, person_names=False):
     anchors = [[tokens(value) for value in page] for page in request["safeTextByPage"]]
     structured = request.get("structuredIdentifiers", False)
     require(type(structured) is bool, "invalid structured detector setting")
-    require((identifiers or structured or person_names) and all(identifiers) and all(page and all(page) for page in anchors),
+    require((identifiers or structured or additional_detector) and all(identifiers) and all(page and all(page) for page in anchors),
             "missing identifier or safe text")
     return identifiers, anchors, language, structured
 
@@ -141,7 +142,7 @@ class Occurrence:
     boxes: list
 
 
-def exact_identities(directory, structured):
+def exact_identities(directory, structured, phones):
     request = json.loads((directory / "dictionary.json").read_text())
     values = request["identifiers"]
     types = request.get("identifierTypes", [None] * len(values))
@@ -153,10 +154,17 @@ def exact_identities(directory, structured):
         trimmed = value.strip()
         known = next((m for m in structured_matches(trimmed)
                       if m.valid and m.start == 0 and m.end == len(trimmed)), None) if structured else None
+        known_phone = None
+        if phones and not known and kind in (None, "IDENTIFIER"):
+            known_phone = next((m for m in phones.matches(trimmed, explicit=True)
+                                if m.start == 0 and m.end == len(trimmed)), None)
         if known:
             require(kind in (None, "IDENTIFIER"), "conflicting identifier type")
             canonical = structured_value(known.kind, trimmed)
             identity = (known.kind, canonical)
+        elif known_phone:
+            canonical = known_phone.value
+            identity = ("PHONE", canonical)
         else:
             canonical = value
             identity = (kind or "IDENTIFIER", term)
@@ -176,7 +184,7 @@ def occurrence(identity, value, words):
     return Occurrence(identity, value, boxes)
 
 
-def detected_occurrences(lines, exact, structured, names):
+def detected_occurrences(lines, exact, structured, names, phones):
     # Newlines preserve the distinction between separators and adjacent values.
     words = []
     text_lines = []
@@ -208,12 +216,18 @@ def detected_occurrences(lines, exact, structured, names):
                 break
             yield index, box
 
-    if structured:
-        for match in structured_matches(joined):
-            if match.valid:
-                value = structured_value(match.kind, joined[match.start:match.end])
-                deterministic.append((match.start, match.end))
-                yield occurrence((match.kind, value), value, region(match.start, match.end))
+    structured_hits = list(structured_matches(joined)) if structured else []
+    for match in structured_hits:
+        if match.valid:
+            value = structured_value(match.kind, joined[match.start:match.end])
+            deterministic.append((match.start, match.end))
+            yield occurrence((match.kind, value), value, region(match.start, match.end))
+    if phones:
+        for match in phones.matches(joined, phone_exclusions(structured_hits)):
+            if any(left <= match.start and match.end <= right for left, right in deterministic):
+                continue
+            deterministic.append((match.start, match.end))
+            yield occurrence(("PHONE", match.value), match.value, region(match.start, match.end))
     if names is not None:
         for start, end in names.spans(joined):
             if any(left <= start and end <= right for left, right in deterministic):
@@ -244,9 +258,9 @@ def merge_occurrences(observed):
     return sorted(unique, key=lambda hit: min((box.y0, box.x0) for box in hit.boxes))
 
 
-def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names):
-    observed = list(detected_occurrences(text_boxes(page), exact, structured, names))
-    observed.extend(detected_occurrences(ocr_lines, exact, structured, names))
+def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names, phones):
+    observed = list(detected_occurrences(text_boxes(page), exact, structured, names, phones))
+    observed.extend(detected_occurrences(ocr_lines, exact, structured, names, phones))
     boxes = []
     placements = []
     scale = pdf.Matrix(pixels.width / page.rect.width, pixels.height / page.rect.height)
@@ -275,13 +289,25 @@ def plan_placeholders(page, pixels, exact, structured, identities, values, count
     return boxes, placements
 
 
-def check_identifiers(text, terms, structured, message):
+def phone_exclusions(matches):
+    # Compact DE phone numbers may resemble an invalid 11-digit IdNr.
+    return [match for match in matches if match.valid or match.kind != "TAX_ID"]
+
+
+def mapped_phone_bases(values):
+    return {value.split(";ext=", 1)[0] for label, value in values.items() if label.startswith("[PHONE_")}
+
+
+def check_identifiers(text, terms, structured, message, phones=None, known_phones=()):
     sequence = tokens(text)
     require(not any(contains(sequence, term) for term in terms), message)
-    if structured:
-        for match in structured_matches(text):
-            require(match.valid, "uncertain structured identifier remains")
-            raise RuntimeError("structured identifier remains")
+    matches = list(structured_matches(text)) if structured else []
+    if phones:
+        require(not phones.matches(text, phone_exclusions(matches), known_phones),
+                "phone number remains: " + message)
+    for match in matches:
+        require(match.valid, "uncertain structured identifier remains")
+        raise RuntimeError("structured identifier remains")
     return sequence
 
 
@@ -315,13 +341,14 @@ def raster_digest(pixels):
     return [pixels.width, pixels.height, hashlib.sha256(pixels.samples).hexdigest()]
 
 
-def redact(directory, review=False, vault=None, paddle_models=None, person_names=False):
-    terms, anchors, language, structured = settings(directory, person_names)
+def redact(directory, review=False, vault=None, paddle_models=None, person_names=False, phone_regions=None):
+    terms, anchors, language, structured = settings(directory, person_names or phone_regions is not None)
+    phones = PhoneNumbers(phone_regions) if phone_regions is not None else None
     names = PersonNames(language) if person_names else None
     manifest = []
     highlights = []
     placements_by_page = []
-    exact = exact_identities(directory, structured) if vault is not None else None
+    exact = exact_identities(directory, structured, phones) if vault is not None else None
     identities, values, counters = {}, {}, defaultdict(int)
     with pdf.open(directory / "source.pdf") as source, pdf.open() as output:
         check_source(source, anchors)
@@ -331,7 +358,7 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
             ocr_lines = paddle.lines(page, pixels) if paddle else ocr_boxes(page, pixels, language)
             if exact is not None:
                 boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
-                                                      counters, ocr_lines, names)
+                                                      counters, ocr_lines, names, phones)
                 placements_by_page.append(placements)
             else:
                 boxes = list(identifier_boxes(text_boxes(page), terms, structured))
@@ -344,7 +371,8 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
                 require(page.apply_redactions(images=pdf.PDF_REDACT_IMAGE_PIXELS,
                                               graphics=pdf.PDF_REDACT_LINE_ART_NONE,
                                               text=pdf.PDF_REDACT_TEXT_REMOVE), "redaction failed")
-            check_identifiers(page.get_text(), terms, structured, "identifier remains in working text")
+            check_identifiers(page.get_text(), terms, structured, "identifier remains in working text",
+                              phones, mapped_phone_bases(values) if phones else ())
             pixels = raster(page)
             if vault is not None:
                 apply_patches(pixels, placements)
@@ -360,6 +388,8 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
             plan["paddle"] = paddle.measurement()
         if names:
             plan["names"] = names.measurement()
+        if phones:
+            plan["phones"] = phones.measurement()
         if vault is not None:
             mapping = json.dumps({"candidateSha256": digest, "values": values}, ensure_ascii=False).encode("utf-8")
             with (vault / "mapping.json").open("xb") as private:
@@ -436,11 +466,13 @@ def remove_review_labels(text, labels):
         label = re.sub(r"[ _]+", "_", match.group())
         return " " if label in labels else match.group()
 
-    return re.sub(r"\[(?:PERSON|IDENTIFIER|EMAIL|IBAN|TAX[ _]ID)[ _]+[0-9]+\]", replace, text)
+    return re.sub(r"\[(?:PERSON|IDENTIFIER|EMAIL|IBAN|PHONE|TAX[ _]ID)[ _]+[0-9]+\]", replace, text)
 
 
-def verify(directory, review=False, vault=None, person_names=False):
-    terms, anchors, language, structured = settings(directory, person_names)
+def verify(directory, review=False, vault=None, person_names=False, phone_regions=None):
+    terms, anchors, language, structured = settings(directory, person_names or phone_regions is not None)
+    phones = PhoneNumbers(phone_regions) if phone_regions is not None else None
+    known_phones = set()
     names = PersonNames(language) if person_names else None
     candidate = checked_bytes(directory / "candidate.pdf", MAX_CANDIDATE_BYTES)
     manifest = json.loads((directory / "rasters.json").read_text())
@@ -454,6 +486,10 @@ def verify(directory, review=False, vault=None, person_names=False):
         highlights = plan["highlights"]
         require(("names" in plan) == person_names and (not names or plan["names"]["model"] == names.model),
                 "review requires the configured person model")
+        require(("phones" in plan) == (phones is not None) and
+                (not phones or (plan["phones"]["regions"] == list(phones.regions) and
+                                plan["phones"]["version"] == phones.version)),
+                "review requires the configured phone detector")
         require(("placements" in plan) == (vault is not None) and
                 ("mappingDigest" in plan) == (vault is not None), "review requires its Vault mapping")
         if vault is not None:
@@ -466,6 +502,8 @@ def verify(directory, review=False, vault=None, person_names=False):
                     "Vault mapping does not belong to candidate")
             if names:
                 terms.extend(tokens(value) for label, value in reverse["values"].items() if label.startswith("[PERSON_"))
+            if phones:
+                known_phones = mapped_phone_bases(reverse["values"])
     require(not command("pdftotext", "-enc", "UTF-8", "-", "-", data=candidate).strip(), "extractable text remains")
     require(not command("pdfinfo", "-meta", "-", data=candidate).strip(), "XMP remains")
     with (pdf.open(directory / "source.pdf") as source, pdf.open(stream=candidate, filetype="pdf") as document,
@@ -489,7 +527,8 @@ def verify(directory, review=False, vault=None, person_names=False):
             audited = set()
             for pixels in (embedded, rendered):
                 text = ocr_text(ocr(pixels, language, 11))
-                seen = check_identifiers(text, terms, structured, "identifier remains in raster OCR")
+                seen = check_identifiers(text, terms, structured, "identifier remains in raster OCR",
+                                         phones, known_phones)
                 require(all(contains(seen, term) for term in safe), "safe text missing")
                 if names and text not in audited:
                     # These generated labels have already passed exact patch verification.
@@ -522,13 +561,16 @@ if __name__ == "__main__":
     parser.add_argument("vault", nargs="?", type=Path)
     parser.add_argument("--paddle-models", type=Path)
     parser.add_argument("--person-names", action="store_true")
+    parser.add_argument("--phone-regions")
     args = parser.parse_args()
     action, _, suffix = args.mode.partition("-")
     require(args.vault is None or suffix == "review", "invalid worker mode")
-    require(not args.person_names or args.vault is not None, "person names require private review and mapping")
+    require(not (args.person_names or args.phone_regions is not None) or args.vault is not None,
+            "configured detectors require private review and mapping")
+    regions = None if args.phone_regions is None else (args.phone_regions.split(",") if args.phone_regions else [])
     if action == "redact":
         redact(args.location, review=suffix == "review", vault=args.vault, paddle_models=args.paddle_models,
-               person_names=args.person_names)
+               person_names=args.person_names, phone_regions=regions)
     else:
         require(args.paddle_models is None, "verification uses independent OCR")
-        verify(args.location, review=suffix == "review", vault=args.vault, person_names=args.person_names)
+        verify(args.location, review=suffix == "review", vault=args.vault, person_names=args.person_names, phone_regions=regions)

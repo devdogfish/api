@@ -71,7 +71,7 @@ grouped German IBANs, compact and 2-3-3-3 IdNr, and spaces around an OCR-split
 A bad checksum on a supported numeric shape or a surviving unresolved `@`
 blocks verification. Checksums validate structure. Detection depends on text
 extraction and OCR. Use the exact-match dictionary for known values outside
-these shapes, including phone numbers and other countries' IBANs.
+these shapes, including other countries' IBANs. Phone detection has a separate opt-in.
 
 ```sh
 bun scripts/prove-structured-redaction.ts "$proof_python"
@@ -158,6 +158,37 @@ also failed closed.
 | --- | ---: | ---: | ---: |
 | English | 12.63 s | 1.207 s | 1,462 MiB |
 | German | 12.16 s | 1.198 s | 1,663 MiB |
+
+Set `phoneRegions` on `createPrivatePdfReview` to opt in with an owner-only
+`vaultRoot`. Supply up to three explicit libphonenumber region codes.
+An empty list enables international `+` numbers only. Stage
+`phonenumbers==9.0.43` with wheel SHA-256
+`349bc799f15e010e35bd2c7d28149950ae74479cb1e11fb054ed9a95ecb4b437`.
+[Release and checksum](https://pypi.org/project/phonenumbers/9.0.43/)
+
+The detector requires numbering-plan validity and 7–15 digits in the
+international form. A national number needs a nearby English or German phone cue, such as
+`Tel:`, or a parenthesized area code. Matches may wrap over two adjacent
+lines on one page. Partial and conflicting interpretations are refused.
+Regional dial-out prefixes, bare subscriber numbers, short codes and
+vanity numbers remain exact-list cases. Number-plan checks do not establish
+assignment or reachability. The parser is bounded to 65,536 characters and
+4,096 digit groups per page transcription.
+
+Equivalent formats share a `[PHONE_n]` label and an E.164 value in the private
+mapping. Parsed extensions are retained there as `;ext=`. Independent
+Tesseract verification checks phone matches again and recognizes mapped base
+numbers even if their phone cue is missing.
+
+```sh
+sandbox-exec -p '(version 1) (allow default) (deny network*)' \
+  bun scripts/prove-phone-numbers.ts "$proof_python" "$paddle_models"
+```
+
+The network-disabled macOS arm64 proof removed eight labeled occurrences
+across a text page and a Paddle scan. A date and a phone-shaped ID survived,
+and the verifier refused a planted residual. Preparation took 11.56 s.
+The redactor spent 42.9 ms of CPU on parser startup and seven calls.
 
 ## Public routing
 

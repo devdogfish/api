@@ -4,7 +4,7 @@ import re
 
 import pymupdf as pdf
 
-LABEL = re.compile(r"\[(?:PERSON|IDENTIFIER|IBAN|TAX_ID|EMAIL)_[1-9][0-9]*\]")
+LABEL = re.compile(r"\[(?:PERSON|IDENTIFIER|IBAN|TAX_ID|EMAIL|PHONE)_[1-9][0-9]*\]")
 
 
 def patch(box, label):

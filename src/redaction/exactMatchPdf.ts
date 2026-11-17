@@ -16,19 +16,20 @@ export type ExactMatchPdf = {
 const worker = fileURLToPath(new URL('./exact_match_pdf.py', import.meta.url))
 const maxPdfBytes = 25 * 1024 * 1024
 
-type Detectors = { paddleModels?: string; personNames?: boolean }
+type Detectors = { paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[] }
 
 async function run(python: string, mode: string, candidate: string, vaultDraft?: string, detectors?: Detectors) {
-  const { paddleModels, personNames } = detectors ?? {}
+  const { paddleModels, personNames, phoneRegions } = detectors ?? {}
   const args = [python, worker, mode, dirname(candidate)]
   if (vaultDraft) args.push(vaultDraft)
   if (paddleModels !== undefined) args.push('--paddle-models', resolve(paddleModels))
   if (personNames) args.push('--person-names')
+  if (phoneRegions !== undefined) args.push('--phone-regions', phoneRegions.join(','))
   const env = { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
   const child = Bun.spawn(args, {
     stdin: 'ignore', stdout: 'pipe', stderr: 'ignore',
     env: paddleModels === undefined ? env : { ...env, HOME: dirname(candidate) },
-    timeout: paddleModels !== undefined || personNames ? 300_000 : undefined,
+    timeout: paddleModels !== undefined || personNames || phoneRegions !== undefined ? 300_000 : undefined,
     killSignal: 'SIGKILL'
   })
   const [status, output] = await Promise.all([child.exited, new Response(child.stdout).text()])
@@ -43,7 +44,7 @@ function createPdfRedactor<Verified>(
   type Draft = { job: ExactMatchPdf; vaultDraft?: string }
   return createVerifiedPrivateRedactionExecutor<Draft, Verified>(admission, scratchRoot, {
     async redact({ job, vaultDraft }, candidate) {
-      if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || (!job.identifiers.length && job.structuredIdentifiers !== true && !detectors?.personNames) ||
+      if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || (!job.identifiers.length && job.structuredIdentifiers !== true && !detectors?.personNames && detectors?.phoneRegions === undefined) ||
           job.identifiers.length > 128 || job.safeTextByPage.length > 8 ||
           (vaultDraft && job.identifierTypes && (!Array.isArray(job.identifierTypes) ||
             job.identifierTypes.length !== job.identifiers.length ||
@@ -89,7 +90,9 @@ export function createPdfReviewPreparer(
 ) {
   type Prepared = { candidate: string; candidateSha256: string; reviewSha256: string; mappingSha256?: string }
   const execute = createPdfRedactor<Prepared>(admission, scratchRoot, python, true, async (candidate, vaultDraft) => {
-    const output = await run(python, 'verify-review', candidate, vaultDraft, { personNames: detectors?.personNames })
+    const output = await run(python, 'verify-review', candidate, vaultDraft, {
+      personNames: detectors?.personNames, phoneRegions: detectors?.phoneRegions
+    })
     const proof = output !== false && /^([0-9a-f]{64}) ([0-9a-f]{64})(?: ([0-9a-f]{64}))?\n$/.exec(output)
     if (!proof) return false
     const [, candidateSha256, reviewSha256, mappingSha256] = proof
