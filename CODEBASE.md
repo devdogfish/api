@@ -31,6 +31,10 @@ Protected endpoints use `bearerAuth`: `Authorization: Bearer <API Token>`.
 - `DELETE /api/v1/transcription/jobs/{job_id}`: protected cancellation for queued or processing transcription jobs.
 - `GET /api/v1/transcription/jobs/{job_id}/result`: protected final transcript retrieval; also reports pending, failed, or cancelled states.
 
+## Compute admission
+
+OCR and both transcription paths share one slot per app. Two direct requests and one async worker can wait. Full direct queues return 503 `compute_busy`. Accepted async jobs retain their existing backlog and API. Cancellation frees a wait; running work holds the slot until it settles.
+
 ## Dashboard edge routes
 
 - `POST https://dashboard.girke.dev/api/v1/website-analytics/events` forwards portfolio batches to the private analytics relay. Requires the relay’s dedicated `X-API-Key`.

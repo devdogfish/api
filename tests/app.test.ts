@@ -176,7 +176,7 @@ const expectedOpenApiOperations = [
     tag: 'OCR',
     security: expectedBearerSecurity,
     requestContentTypes: ['multipart/form-data'],
-    responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502', '504'],
+    responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502', '503', '504'],
     responseContentTypes: ['application/json']
   },
   {
@@ -195,7 +195,7 @@ const expectedOpenApiOperations = [
     tag: 'Transcription',
     security: expectedBearerSecurity,
     requestContentTypes: ['multipart/form-data'],
-    responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502'],
+    responseStatusCodes: ['200', '400', '401', '413', '415', '422', '502', '503'],
     responseContentTypes: ['application/json']
   },
   {
@@ -487,7 +487,7 @@ describe('API base routes', () => {
     expect(ocrRecognizeOperation.security).toEqual(expectedBearerSecurity)
     expect(ocrRecognizeRequestBody.required).toBe(true)
     expect(ocrRecognizeRequestBody.content['multipart/form-data'].schema.$ref).toBe('#/components/schemas/OcrRequest')
-    expect(Object.keys(ocrRecognizeOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502', '504'])
+    expect(Object.keys(ocrRecognizeOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502', '503', '504'])
     expect(ocrRecognizeOperation.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/OcrResponse'
     )
@@ -535,7 +535,7 @@ describe('API base routes', () => {
     expect(transcriptionSyncRequestBody.content['multipart/form-data'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionSyncRequest'
     )
-    expect(Object.keys(transcriptionSyncOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502'])
+    expect(Object.keys(transcriptionSyncOperation.responses).sort()).toEqual(['200', '400', '401', '413', '415', '422', '502', '503'])
     expect(transcriptionSyncOperation.responses['200'].content['application/json'].schema.$ref).toBe(
       '#/components/schemas/TranscriptionSyncResponse'
     )

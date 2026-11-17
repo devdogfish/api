@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import type { AppEnv } from '../appEnv'
+import { ComputeAdmission, ComputeBusyError, computeBusy, computeBusySchema } from '../computeAdmission'
 import {
   DEFAULT_OCR_MAX_UPLOAD_BYTES,
   OCR_MODEL,
@@ -17,6 +18,7 @@ import {
 import { createJsonResponse, OCR_TAG, PROTECTED_BEARER_SECURITY, unauthorizedErrorResponse } from '../openapi'
 
 export type OcrRouteOptions = {
+  admission?: ComputeAdmission
   processor?: OcrProcessor
   maxUploadBytes?: number
   timeoutMs?: number
@@ -192,12 +194,14 @@ const ocrRecognizeRoute = createRoute({
       error: 'image_processing_failed'
     }),
     502: createJsonResponse('OCR processor failed while extracting text.', ocrFailedResponseSchema, { error: 'ocr_failed' }),
+    503: createJsonResponse('The shared compute queue is full.', computeBusySchema, computeBusy),
     504: createJsonResponse('OCR processing exceeded the configured timeout.', ocrTimedOutResponseSchema, { error: 'ocr_timed_out' })
   }
 })
 
 export function ocrRoutes(opts: OcrRouteOptions = {}) {
   const app = new OpenAPIHono<AppEnv>()
+  const admission = opts.admission ?? new ComputeAdmission()
   const processor = opts.processor ?? createTesseractOcrProcessor()
   const maxUploadBytes = opts.maxUploadBytes ?? DEFAULT_OCR_MAX_UPLOAD_BYTES
   const timeoutMs = opts.timeoutMs ?? OCR_TIMEOUT_MS
@@ -216,11 +220,22 @@ export function ocrRoutes(opts: OcrRouteOptions = {}) {
         return c.json({ error: 'unsupported_image_format' }, 415)
       }
 
-      const tempUpload = await writeTempUpload(file)
+      const signal = c.req.raw.signal
       try {
-        const result = await processor.recognize({ inputPath: tempUpload.path, timeoutMs })
+        const result = await admission.run(async () => {
+          signal.throwIfAborted()
+          const tempUpload = await writeTempUpload(file)
+          try {
+            signal.throwIfAborted()
+            return await processor.recognize({ inputPath: tempUpload.path, timeoutMs })
+          } finally {
+            await rm(tempUpload.dir, { recursive: true, force: true })
+          }
+        }, signal)
         return c.json(ocrResponseSchema.parse(result), 200)
       } catch (err) {
+        if (err instanceof ComputeBusyError) return c.json(computeBusy, 503)
+        if (signal.aborted && err === signal.reason) return c.json({ error: 'ocr_failed' }, 502)
         if (err instanceof OcrProcessorError) {
           if (err.code === 'OCR_TIMED_OUT') return c.json({ error: 'ocr_timed_out' }, 504)
           if (err.code === 'IMAGE_PREPROCESSING_FAILED') return c.json({ error: 'image_processing_failed' }, 422)
@@ -228,8 +243,6 @@ export function ocrRoutes(opts: OcrRouteOptions = {}) {
         }
 
         throw err
-      } finally {
-        await rm(tempUpload.dir, { recursive: true, force: true })
       }
     },
     (result, c) => {

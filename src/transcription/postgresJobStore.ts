@@ -139,6 +139,12 @@ export function createPostgresTranscriptionJobStore(database: Database): Transcr
       return mapJob(updated)
     },
 
+    async updateIfStatus(publicId, status, update) {
+      const [updated] = await database.update(transcriptionJobs).set(updateValues(update))
+        .where(and(eq(transcriptionJobs.publicId, publicId), eq(transcriptionJobs.status, status))).returning()
+      return updated ? mapJob(updated) : null
+    },
+
     async insertChunk(chunk: TranscriptionChunkRecord) {
       const job = await this.findByPublicId(chunk.jobPublicId)
       if (!job?.id) throw new Error(`transcription job not found: ${chunk.jobPublicId}`)

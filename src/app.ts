@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { requestLogger } from './middleware/logger'
 import { bearerTokenAuth, type ApiTokenStore } from './middleware/auth'
 import type { AppEnv } from './appEnv'
+import { ComputeAdmission } from './computeAdmission'
 import {
   registerTranscriptionWebhooks,
   transcriptionRoutes,
@@ -55,6 +56,7 @@ export type AppConfig = {
 
 export function createApp(config: AppConfig) {
   const app = new OpenAPIHono<AppEnv>()
+  const admission = new ComputeAdmission()
 
   app.use('*', requestLogger())
   app.use('*', bodyLimit({ maxSize: 2 * 1024 * 1024 * 1024 }))
@@ -75,6 +77,7 @@ export function createApp(config: AppConfig) {
   app.route(
     TRANSCRIPTION_BASE_PATH,
     transcriptionRoutes({
+      admission,
       whisperUrl: config.whisperUrl,
       whisperFetch: config.whisperFetch,
       jobStore: config.transcriptionJobStore,
@@ -97,6 +100,7 @@ export function createApp(config: AppConfig) {
   app.route(
     '/api/v1/ocr',
     ocrRoutes({
+      admission,
       processor: config.ocrProcessor,
       maxUploadBytes: config.ocrMaxUploadBytes,
       timeoutMs: config.ocrTimeoutMs
