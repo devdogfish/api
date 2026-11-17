@@ -66,17 +66,26 @@ The entrypoint checks `memory.max=6442450944`, `memory.swap.max=0` and
 events even if the job fails. Cgroup memory is the budget measurement.
 Sampled process-tree RSS can double-count shared pages and miss short peaks.
 
-For a transferred sealed bundle, run from the already authorized AMD64 guest.
+For the sealed draft #10 bundle, use the runner from this checkout. Run the
+preflight on an already authorized, disposable native AMD64 Linux guest.
 
 ```sh
-sh "$bundle/run-sealed-native.sh" "$bundle"
+sh scripts/aggregate-proof/run-sealed-native.sh --preflight "$bundle"
 ```
 
-The helper checks native rootless Docker, capacity, archive checksums, the
-sealed config, and loaded layers. It removes an image tag only when this
-invocation loaded it. Run with `--check-bundle` before transfer to verify
-the bundle without accessing Docker. Preserve the run output, then remove
-the transferred proof files.
+Require `native_preflight_passed=1`. The command verifies the pinned transfer
+manifest, embedded image config, loaded layer digests, and local rootless
+Docker. It uses the sealed cgroup budget entrypoint and checks that the
+container sees only loopback. It mounts no model or fixture inputs. Any image
+tag it loads is temporary. Guest and Docker architecture checks reject the
+ARM64 Docker Desktop emulation path. Establish the underlying host's native
+hardware from the authorized inventory before using this as qualification.
+
+Run `sh scripts/aggregate-proof/run-sealed-native.sh --check-bundle "$bundle"`
+to verify the exact bundle offline on any architecture without Docker.
+After a passing native preflight, the same checkout runner without
+`--preflight` starts the synthetic fixture after the same guards. Preserve the
+run output and remove the transferred proof files.
 
 ## Run the native macOS fallback
 
