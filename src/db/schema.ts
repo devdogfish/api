@@ -31,6 +31,8 @@ export const transcriptionJobs = pgTable('transcription_jobs', {
   errorMessage: text('error_message'),
   webhookUrl: text('webhook_url'),
   cancelRequested: boolean('cancel_requested').notNull().default(false),
+  claimToken: text('claim_token'),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),

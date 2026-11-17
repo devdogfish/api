@@ -318,7 +318,10 @@ Processing rules:
 - progress is completed chunks divided by total chunks
 - progress stays below `1` until the final stitched transcript is persisted
 - retry each failed chunk up to 3 attempts
-- reuse successful chunk outputs on retry/resume
+- recover queued jobs and expired processing claims at startup and during polling
+- reuse completed chunks when their indexes and time ranges match; preserve the source if they differ
+- commit terminal state before deleting media; review leftover media if interrupted during cleanup
+- apply migration `0003_transcription_job_claims` and stop older, unfenced workers before starting the recovering worker
 - after 3 failed attempts for one chunk, mark the job failed with `CHUNK_RETRY_EXHAUSTED`
 - segment timestamps in the final result are absolute media seconds
 - keep `chunk_index` in segment output for debugging

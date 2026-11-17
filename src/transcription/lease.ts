@@ -1,0 +1,1 @@
+export const TRANSCRIPTION_LEASE_MS = 30_000

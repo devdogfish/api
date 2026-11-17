@@ -47,6 +47,7 @@ const app = createApp({
   apiTokenStore: createPostgresApiTokenStore(),
   version: process.env.APP_VERSION ?? 'dev',
   whisperUrl: process.env.WHISPER_URL ?? 'http://whisper:8000',
+  recoverTranscriptionJobs: true,
   transcriptionJobStore: createPostgresTranscriptionJobStore(db),
   transcriptionUploadDir: process.env.TRANSCRIPTION_UPLOAD_DIR ?? './var/transcription-uploads',
   transcriptionKeepMedia: process.env.TRANSCRIPTION_KEEP_MEDIA === 'true',

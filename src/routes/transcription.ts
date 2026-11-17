@@ -7,6 +7,7 @@ import { OpenAPIHono, createRoute } from '@hono/zod-openapi'
 import { z } from 'zod'
 import type { AppEnv } from '../appEnv'
 import { ComputeAdmission, ComputeBusyError, computeBusy, computeBusySchema } from '../computeAdmission'
+import { TRANSCRIPTION_LEASE_MS } from '../transcription/lease'
 import { createJsonResponse, PROTECTED_BEARER_SECURITY, TRANSCRIPTION_TAG, unauthorizedErrorResponse } from '../openapi'
 import {
   createFfmpegMediaProcessor,
@@ -162,6 +163,7 @@ export type TranscriptionJobRecord = {
   errorMessage: string | null
   webhookUrl: string | null
   cancelRequested: boolean
+  claimToken: string | null
   createdAt: Date
   startedAt: Date | null
   completedAt: Date | null
@@ -221,6 +223,10 @@ export type TranscriptionJobStore = {
   findByPublicIdForToken(publicId: string, apiTokenId: number): Promise<TranscriptionJobRecord | null>
   update(publicId: string, update: TranscriptionJobUpdate): Promise<TranscriptionJobRecord>
   updateIfStatus(publicId: string, status: TranscriptionJobRecord['status'], update: TranscriptionJobUpdate): Promise<TranscriptionJobRecord | null>
+  listRecoverable(limit: number): Promise<string[]>
+  claim(publicId: string, token: string): Promise<TranscriptionJobRecord | null>
+  renewClaim(publicId: string, token: string): Promise<boolean>
+  writeClaim(publicId: string, token: string, update: TranscriptionJobUpdate, chunk?: TranscriptionChunkRecord): Promise<TranscriptionJobRecord | null>
   insertChunk(chunk: TranscriptionChunkRecord): Promise<void>
   listChunks(publicId: string): Promise<TranscriptionChunkRecord[]>
 }
@@ -238,6 +244,7 @@ export type TranscriptionWebhookDispatcher = {
 
 export type TranscriptionRouteOptions = {
   admission?: ComputeAdmission
+  recoverJobs?: boolean
   whisperUrl?: string
   whisperFetch?: TranscriptionFetch
   jobStore?: TranscriptionJobStore
@@ -518,6 +525,7 @@ export function createTranscriptionWebhookDispatcher(opts: {
 export class InMemoryTranscriptionJobStore implements TranscriptionJobStore {
   private jobs = new Map<string, TranscriptionJobRecord>()
   private chunks: TranscriptionChunkRecord[] = []
+  private deadlines = new Map<string, number>()
 
   async create(input: CreateTranscriptionJobInput) {
     const date = now()
@@ -543,6 +551,7 @@ export class InMemoryTranscriptionJobStore implements TranscriptionJobStore {
       errorMessage: null,
       webhookUrl: input.webhookUrl,
       cancelRequested: false,
+      claimToken: null,
       createdAt: date,
       startedAt: null,
       completedAt: null,
@@ -578,6 +587,42 @@ export class InMemoryTranscriptionJobStore implements TranscriptionJobStore {
     return this.update(publicId, update)
   }
 
+  private recoverable(job: TranscriptionJobRecord) {
+    return !job.cancelRequested && !!job.inputPath &&
+      (job.status === 'queued' || (job.status === 'processing' && (this.deadlines.get(job.publicId) ?? 0) <= Date.now()))
+  }
+
+  async listRecoverable(limit: number) {
+    return [...this.jobs.values()].filter(job => this.recoverable(job)).slice(0, limit).map(job => job.publicId)
+  }
+
+  async claim(publicId: string, token: string) {
+    const job = this.jobs.get(publicId)
+    if (!job || !this.recoverable(job)) return null
+    const claimed = { ...job, status: 'processing' as const, claimToken: token, startedAt: job.startedAt ?? now(), updatedAt: now() }
+    this.jobs.set(publicId, claimed)
+    this.deadlines.set(publicId, Date.now() + TRANSCRIPTION_LEASE_MS)
+    return claimed
+  }
+
+  private owns(publicId: string, token: string) {
+    const job = this.jobs.get(publicId)
+    return job?.status === 'processing' && !job.cancelRequested && job.claimToken === token &&
+      (this.deadlines.get(publicId) ?? 0) > Date.now()
+  }
+
+  async renewClaim(publicId: string, token: string) {
+    if (!this.owns(publicId, token)) return false
+    this.deadlines.set(publicId, Date.now() + TRANSCRIPTION_LEASE_MS)
+    return true
+  }
+
+  async writeClaim(publicId: string, token: string, update: TranscriptionJobUpdate, chunk?: TranscriptionChunkRecord) {
+    if (!this.owns(publicId, token)) return null
+    if (chunk) this.chunks.push(chunk)
+    return this.update(publicId, update)
+  }
+
   async insertChunk(chunk: TranscriptionChunkRecord) {
     this.chunks.push(chunk)
   }
@@ -587,8 +632,30 @@ export class InMemoryTranscriptionJobStore implements TranscriptionJobStore {
   }
 }
 
+class TranscriptionClaimLost extends Error {}
+class IncompatibleCheckpoint extends Error {}
+
+function replayableChunks(prepared: PreparedTranscriptionMedia, persisted: TranscriptionChunkRecord[]) {
+  const completed = new Map<number, TranscriptionChunkRecord>()
+  for (const chunk of persisted) {
+    if (chunk.status !== 'completed') continue
+    const planned = prepared.chunks[chunk.chunkIndex]
+    if (!planned || planned.chunkIndex !== chunk.chunkIndex || completed.has(chunk.chunkIndex) ||
+      Math.fround(planned.startSeconds) !== Math.fround(chunk.startSeconds) ||
+      Math.fround(planned.endSeconds) !== Math.fround(chunk.endSeconds) ||
+      typeof chunk.text !== 'string' || !Array.isArray(chunk.segmentsJson) ||
+      !chunk.segmentsJson.every(segment =>
+        transcriptionJobResultSegmentSchema.safeParse(segment).success && segment.chunk_index === chunk.chunkIndex)) {
+      throw new IncompatibleCheckpoint('Saved transcription chunks do not match the prepared media')
+    }
+    completed.set(chunk.chunkIndex, chunk)
+  }
+  return completed
+}
+
 export class InProcessTranscriptionWorker implements TranscriptionWorker {
   private queue = Promise.resolve()
+  private scheduled = new Set<string>()
   private current?: { publicId: string; controller: AbortController }
 
   constructor(
@@ -604,19 +671,35 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
     }
   ) {}
 
+  startRecovery() {
+    const scan = async () => {
+      try {
+        for (const id of await this.opts.store.listRecoverable(50)) this.enqueue(id)
+      } catch {
+        console.error(JSON.stringify({ level: 'error', msg: 'transcription recovery scan failed' }))
+      } finally {
+        setTimeout(scan, 2_000).unref()
+      }
+    }
+    void scan()
+  }
+
   enqueue(publicId: string) {
+    if (this.scheduled.has(publicId)) return
+    this.scheduled.add(publicId)
     this.queue = this.queue.then(async () => {
       const controller = new AbortController()
       const signal = controller.signal
       this.current = { publicId, controller }
       try {
         const result = this.opts.admission
-          ? await this.opts.admission.run(() => this.process(publicId, signal), signal, true)
-          : await this.process(publicId, signal)
+          ? await this.opts.admission.run(() => this.process(publicId, controller), signal, true)
+          : await this.process(publicId, controller)
         if (result) await this.opts.webhookDispatcher?.deliver(result)
       } catch (err) {
         if (!signal.aborted || err !== signal.reason) throw err
       } finally {
+        this.scheduled.delete(publicId)
         this.current = undefined
       }
     }).catch((err) => {
@@ -628,67 +711,71 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
     if (this.current?.publicId === publicId) this.current.controller.abort()
   }
 
-  private async process(publicId: string, signal: AbortSignal) {
-    const job = await this.opts.store.findByPublicId(publicId)
-    if (!job || (job.status !== 'queued' && job.status !== 'processing') || job.cancelRequested || signal.aborted) return
+  private async process(publicId: string, controller: AbortController) {
+    const signal = controller.signal
+    signal.throwIfAborted()
+    const token = crypto.randomUUID()
+    let job = await this.opts.store.claim(publicId, token)
+    if (!job) return
 
-    const claimed = await this.opts.store.updateIfStatus(publicId, job.status, {
-      status: 'processing',
-      ...(job.status === 'queued' ? { progress: 0, currentChunk: 0 } : {}),
-      ...(job.startedAt ? {} : { startedAt: now() })
-    })
-    if (!claimed) return
+    const write = async (update: TranscriptionJobUpdate, chunk?: TranscriptionChunkRecord) => {
+      signal.throwIfAborted()
+      let result
+      try {
+        result = await this.opts.store.writeClaim(publicId, token, update, chunk)
+      } catch (cause) {
+        // The transaction may have committed before the connection failed. Let recovery inspect it.
+        throw new TranscriptionClaimLost('Unable to confirm the transcription claim write', { cause })
+      }
+      if (!result) throw new TranscriptionClaimLost()
+      return result
+    }
+    let timer: ReturnType<typeof setTimeout>
+    let stopped = false
+    const renew = async () => {
+      try {
+        if (!await this.opts.store.renewClaim(publicId, token)) controller.abort(new TranscriptionClaimLost())
+      } catch {
+        controller.abort(new TranscriptionClaimLost())
+      }
+      if (!stopped && !signal.aborted) timer = setTimeout(renew, TRANSCRIPTION_LEASE_MS / 3).unref()
+    }
+    timer = setTimeout(renew, TRANSCRIPTION_LEASE_MS / 3).unref()
 
     const started = Date.now()
+    const inputPath = job.inputPath
+    const attemptDir = join(inputPath + '.work', token)
     let prepared: PreparedTranscriptionMedia | null = null
+    let chunkInProgress: TranscriptionMediaChunk | undefined
+    let terminal: TranscriptionJobRecord
+    let retainSource = false
 
     try {
-      signal.throwIfAborted()
-      prepared = await this.opts.mediaProcessor.prepare(job.inputPath)
-      signal.throwIfAborted()
-      if (prepared.durationSeconds > this.opts.asyncMaxDurationSeconds) {
-        await this.cleanupMedia(publicId, job.inputPath, prepared)
-        return this.fail(publicId, 'MEDIA_DURATION_EXCEEDED', `Media duration exceeds ${this.opts.asyncMaxDurationSeconds} seconds`)
-      }
-
-      await this.opts.store.update(publicId, {
-        normalizedAudioPath: prepared.normalizedAudioPath,
-        durationSeconds: prepared.durationSeconds,
-        totalChunks: prepared.chunks.length
-      })
-
-      const completedChunks = new Map(
-        (await this.opts.store.listChunks(publicId))
-          .filter((chunk) => chunk.status === 'completed' && chunk.text !== null && chunk.segmentsJson !== null)
-          .map((chunk) => [chunk.chunkIndex, chunk])
-      )
-
-      for (const chunk of prepared.chunks) {
+      const persisted = await this.opts.store.listChunks(publicId)
+      let terminalUpdate: TranscriptionJobUpdate
+      let failedChunk: TranscriptionChunkRecord | undefined
+      try {
         signal.throwIfAborted()
-        const existing = completedChunks.get(chunk.chunkIndex)
-        if (existing) {
-          await this.opts.store.update(publicId, {
-            currentChunk: chunk.chunkIndex + 1,
-            progress: this.processingProgress(completedChunks.size, prepared.chunks.length)
-          })
-          continue
+        prepared = await this.opts.mediaProcessor.prepare(inputPath, attemptDir)
+        signal.throwIfAborted()
+        if (prepared.durationSeconds > this.opts.asyncMaxDurationSeconds) {
+          throw new TranscriptionWorkerError('MEDIA_DURATION_EXCEEDED', `Media duration exceeds ${this.opts.asyncMaxDurationSeconds} seconds`)
         }
 
-        await this.opts.store.update(publicId, {
-          currentChunk: chunk.chunkIndex,
-          progress: this.processingProgress(completedChunks.size, prepared.chunks.length)
+        const completed = replayableChunks(prepared, persisted)
+        await write({
+          normalizedAudioPath: prepared.normalizedAudioPath,
+          durationSeconds: prepared.durationSeconds,
+          totalChunks: prepared.chunks.length,
+          progress: this.processingProgress(completed.size, prepared.chunks.length)
         })
-
-        const file = new File([await readFile(chunk.path)], basename(chunk.path))
-        try {
-          const result = await this.transcribeChunkWithRetry(file, job.level, job.language, signal)
+        for (const chunk of prepared.chunks) {
           signal.throwIfAborted()
-          const segments = result.segments.map((segment) => ({
-            start: chunk.startSeconds + segment.start,
-            end: chunk.startSeconds + segment.end,
-            text: segment.text,
-            chunk_index: chunk.chunkIndex
-          }))
+          if (completed.has(chunk.chunkIndex)) continue
+          chunkInProgress = chunk
+          await write({ currentChunk: chunk.chunkIndex })
+          const file = new File([await readFile(chunk.path)], basename(chunk.path))
+          const result = await this.transcribeChunkWithRetry(file, job.level, job.language, signal)
           const storedChunk: TranscriptionChunkRecord = {
             jobPublicId: publicId,
             chunkIndex: chunk.chunkIndex,
@@ -696,74 +783,80 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
             endSeconds: chunk.endSeconds,
             status: 'completed',
             text: result.text,
-            segmentsJson: segments,
+            segmentsJson: result.segments.map(segment => ({
+              start: chunk.startSeconds + segment.start,
+              end: chunk.startSeconds + segment.end,
+              text: segment.text,
+              chunk_index: chunk.chunkIndex
+            })),
             processingSeconds: result.processing_seconds,
             errorMessage: null
           }
-          await this.opts.store.insertChunk(storedChunk)
-          completedChunks.set(chunk.chunkIndex, storedChunk)
-          await this.opts.store.update(publicId, {
+          job = await write({
             currentChunk: chunk.chunkIndex + 1,
-            progress: this.processingProgress(completedChunks.size, prepared.chunks.length),
+            progress: this.processingProgress(completed.size + 1, prepared.chunks.length),
             detectedLanguage: result.detected_language,
             model: result.model
-          })
-        } catch (err) {
-          signal.throwIfAborted()
-          const code = err instanceof TranscriptionWorkerError ? err.code : 'TRANSCRIPTION_WORKER_FAILED'
-          await this.cleanupMedia(publicId, job.inputPath, prepared)
-          return this.fail(publicId, code, err instanceof Error ? err.message : 'Transcription worker failed', chunk)
+          }, storedChunk)
+          completed.set(chunk.chunkIndex, storedChunk)
+          chunkInProgress = undefined
         }
 
-        const latest = await this.opts.store.findByPublicId(publicId)
-        if (!latest || latest.status === 'cancelled' || latest.cancelRequested) {
-          await this.cleanupMedia(publicId, job.inputPath, prepared)
-          return
+        const chunks = [...completed.values()].sort((a, b) => a.chunkIndex - b.chunkIndex)
+        const processingSeconds = chunks.reduce((total, chunk) => total + (chunk.processingSeconds ?? 0), 0) || (Date.now() - started) / 1000
+        terminalUpdate = {
+          status: 'completed',
+          progress: 1,
+          currentChunk: prepared.chunks.length,
+          totalChunks: prepared.chunks.length,
+          durationSeconds: prepared.durationSeconds,
+          processingSeconds,
+          resultJson: {
+            ...this.stitchChunks(chunks),
+            duration_seconds: prepared.durationSeconds,
+            processing_seconds: processingSeconds,
+            level: job.level,
+            language: job.language,
+            detected_language: job.detectedLanguage,
+            model: job.model ?? ''
+          },
+          completedAt: now()
+        }
+      } catch (err) {
+        if (signal.aborted || err instanceof TranscriptionClaimLost) throw err
+        const errorCode = err instanceof TranscriptionWorkerError || err instanceof TranscriptionMediaProcessorError
+          ? err.code : 'TRANSCRIPTION_WORKER_FAILED'
+        const errorMessage = err instanceof Error ? err.message : 'Transcription worker failed'
+        retainSource = err instanceof IncompatibleCheckpoint
+        terminalUpdate = { status: 'failed', errorCode, errorMessage, completedAt: now() }
+        if (!retainSource) {
+          failedChunk = {
+            jobPublicId: publicId, chunkIndex: chunkInProgress?.chunkIndex ?? 0,
+            startSeconds: chunkInProgress?.startSeconds ?? 0, endSeconds: chunkInProgress?.endSeconds ?? 0,
+            status: 'failed', text: null, segmentsJson: null, processingSeconds: null, errorMessage
+          }
         }
       }
-
-      const finalChunks = [...completedChunks.values()].sort((a, b) => a.chunkIndex - b.chunkIndex)
-      const stitched = this.stitchChunks(finalChunks)
-      const processingSeconds = finalChunks.reduce((total, chunk) => total + (chunk.processingSeconds ?? 0), 0) || (Date.now() - started) / 1000
-      const latest = await this.opts.store.findByPublicId(publicId)
-      await this.cleanupMedia(publicId, job.inputPath, prepared)
-      return await this.opts.store.updateIfStatus(publicId, 'processing', {
-        status: 'completed',
-        progress: 1,
-        currentChunk: prepared.chunks.length,
-        totalChunks: prepared.chunks.length,
-        durationSeconds: prepared.durationSeconds,
-        processingSeconds,
-        detectedLanguage: latest?.detectedLanguage ?? null,
-        model: latest?.model ?? null,
-        resultJson: {
-          text: stitched.text,
-          segments: stitched.segments,
-          duration_seconds: prepared.durationSeconds,
-          processing_seconds: processingSeconds,
-          level: job.level,
-          language: job.language,
-          detected_language: latest?.detectedLanguage ?? null,
-          model: latest?.model ?? ''
-        },
-        completedAt: now()
-      })
+      terminal = await write(terminalUpdate, failedChunk)
     } catch (err) {
       const latest = await this.opts.store.findByPublicId(publicId)
-      if (latest?.status === 'cancelled' || latest?.cancelRequested) {
-        await this.cleanupMedia(publicId, job.inputPath, prepared)
-        return
+      if (latest?.status === 'cancelled' && latest.claimToken === token) {
+        await this.cleanupMedia(publicId, inputPath, prepared)
+      } else if (err instanceof TranscriptionClaimLost || signal.reason instanceof TranscriptionClaimLost) {
+        // Only this attempt's files are disposable while another worker can still claim the upload.
+        await rm(attemptDir, { recursive: true, force: true })
+      } else {
+        throw err
       }
-
-      const code =
-        err instanceof TranscriptionWorkerError
-          ? err.code
-          : err instanceof TranscriptionMediaProcessorError
-            ? err.code
-            : 'TRANSCRIPTION_WORKER_FAILED'
-      await this.cleanupMedia(publicId, job.inputPath, prepared)
-      return this.fail(publicId, code, err instanceof Error ? err.message : 'Transcription worker failed')
+      return
+    } finally {
+      stopped = true
+      clearTimeout(timer)
     }
+
+    // The result is durable before a crash can cost us the original input.
+    await this.cleanupMedia(publicId, inputPath, prepared, retainSource)
+    return terminal
   }
 
   private processingProgress(completedChunks: number, totalChunks: number) {
@@ -826,28 +919,8 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
     throw new TranscriptionWorkerError('CHUNK_RETRY_EXHAUSTED', lastError instanceof Error ? lastError.message : 'Chunk retry exhausted')
   }
 
-  private async fail(publicId: string, code: TranscriptionJobErrorCode, message: string, chunk?: TranscriptionMediaChunk) {
-    await this.opts.store.insertChunk({
-      jobPublicId: publicId,
-      chunkIndex: chunk?.chunkIndex ?? 0,
-      startSeconds: chunk?.startSeconds ?? 0,
-      endSeconds: chunk?.endSeconds ?? 0,
-      status: 'failed',
-      text: null,
-      segmentsJson: null,
-      processingSeconds: null,
-      errorMessage: message
-    })
-    return this.opts.store.updateIfStatus(publicId, 'processing', {
-      status: 'failed',
-      errorCode: code,
-      errorMessage: message,
-      completedAt: now()
-    })
-  }
-
-  private async cleanupMedia(publicId: string, inputPath: string, prepared?: PreparedTranscriptionMedia | null) {
-    if (this.opts.keepMedia) {
+  private async cleanupMedia(publicId: string, inputPath: string, prepared: PreparedTranscriptionMedia | null, retainSource = false) {
+    if (this.opts.keepMedia || retainSource) {
       await this.opts.store.update(publicId, { mediaCleanupStatus: 'kept' })
       return
     }
@@ -857,8 +930,8 @@ export class InProcessTranscriptionWorker implements TranscriptionWorker {
       if (prepared) {
         await rm(prepared.normalizedAudioPath, { force: true })
         await Promise.all(prepared.chunks.map((chunk) => rm(chunk.path, { force: true })))
-        await rm(`${inputPath}.work`, { recursive: true, force: true })
       }
+      await rm(`${inputPath}.work`, { recursive: true, force: true })
       await this.opts.store.update(publicId, { mediaCleanupStatus: 'deleted' })
     } catch {
       await this.opts.store.update(publicId, { mediaCleanupStatus: 'failed' })
@@ -2022,6 +2095,8 @@ export function transcriptionRoutes(opts: TranscriptionRouteOptions = {}) {
     opts.worker === undefined
       ? new InProcessTranscriptionWorker({ store: jobStore, admission, whisperUrl, whisperFetch, mediaProcessor, keepMedia, asyncMaxDurationSeconds, webhookDispatcher })
       : opts.worker
+
+  if (opts.recoverJobs && worker instanceof InProcessTranscriptionWorker) worker.startRecovery()
 
   app.openapi(transcriptionMetadataRoute, (c) => c.json(createTranscriptionMetadataResponse(), 200))
 

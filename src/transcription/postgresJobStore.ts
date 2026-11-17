@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
 import { transcriptionChunks, transcriptionJobs } from '../db/schema'
+import { TRANSCRIPTION_LEASE_MS } from './lease'
 import type {
   CreateTranscriptionJobInput,
   TranscriptionChunkRecord,
@@ -12,10 +13,39 @@ import type {
   TranscriptionResult
 } from '../routes/transcription'
 
-type Database = {
+type QueryClient = {
   select: (...args: any[]) => any
   insert: (...args: any[]) => any
   update: (...args: any[]) => any
+}
+
+type Database = QueryClient & {
+  transaction<T>(callback: (tx: QueryClient) => Promise<T>): Promise<T>
+}
+
+const leaseDeadline = () => sql`clock_timestamp() + ${TRANSCRIPTION_LEASE_MS} * interval '1 millisecond'`
+
+function recoverable() {
+  return and(eq(transcriptionJobs.cancelRequested, false), ne(transcriptionJobs.inputPath, ''), or(
+    eq(transcriptionJobs.status, 'queued'),
+    and(eq(transcriptionJobs.status, 'processing'), or(
+      isNull(transcriptionJobs.leaseUntil), sql`${transcriptionJobs.leaseUntil} <= clock_timestamp()`
+    ))
+  ))
+}
+
+function ownsClaim(publicId: string, token: string) {
+  return and(eq(transcriptionJobs.publicId, publicId), eq(transcriptionJobs.status, 'processing'),
+    eq(transcriptionJobs.cancelRequested, false), eq(transcriptionJobs.claimToken, token),
+    sql`${transcriptionJobs.leaseUntil} > clock_timestamp()`)
+}
+
+function insertChunk(db: QueryClient, jobId: number, chunk: TranscriptionChunkRecord) {
+  return db.insert(transcriptionChunks).values({
+    jobId, chunkIndex: chunk.chunkIndex, startSeconds: chunk.startSeconds, endSeconds: chunk.endSeconds,
+    status: chunk.status, text: chunk.text, segmentsJson: chunk.segmentsJson,
+    processingSeconds: chunk.processingSeconds, errorMessage: chunk.errorMessage, updatedAt: new Date()
+  })
 }
 
 function createPublicJobId() {
@@ -51,6 +81,7 @@ function mapJob(row: any): TranscriptionJobRecord {
     errorMessage: row.errorMessage ?? null,
     webhookUrl: row.webhookUrl ?? null,
     cancelRequested: row.cancelRequested,
+    claimToken: row.claimToken ?? null,
     createdAt: toDate(row.createdAt) ?? new Date(),
     startedAt: toDate(row.startedAt),
     completedAt: toDate(row.completedAt),
@@ -145,22 +176,42 @@ export function createPostgresTranscriptionJobStore(database: Database): Transcr
       return updated ? mapJob(updated) : null
     },
 
+    async listRecoverable(limit) {
+      const rows = await database.select({ publicId: transcriptionJobs.publicId }).from(transcriptionJobs)
+        .where(recoverable()).orderBy(asc(transcriptionJobs.createdAt), asc(transcriptionJobs.id)).limit(limit)
+      return rows.map((row: { publicId: string }) => row.publicId)
+    },
+
+    async claim(publicId, token) {
+      const [row] = await database.update(transcriptionJobs).set({
+        status: 'processing', claimToken: token, leaseUntil: leaseDeadline(),
+        startedAt: sql`coalesce(${transcriptionJobs.startedAt}, clock_timestamp())`,
+        updatedAt: new Date()
+      }).where(and(eq(transcriptionJobs.publicId, publicId), recoverable())).returning()
+      return row ? mapJob(row) : null
+    },
+
+    async renewClaim(publicId, token) {
+      const [row] = await database.update(transcriptionJobs).set({ leaseUntil: leaseDeadline() })
+        .where(ownsClaim(publicId, token)).returning({ id: transcriptionJobs.id })
+      return !!row
+    },
+
+    async writeClaim(publicId, token, update, chunk) {
+      const write = async (db: QueryClient) => {
+        const [row] = await db.update(transcriptionJobs).set(updateValues(update))
+          .where(ownsClaim(publicId, token)).returning()
+        if (!row) return null
+        if (chunk) await insertChunk(db, row.id, chunk)
+        return mapJob(row)
+      }
+      return chunk ? database.transaction(write) : write(database)
+    },
+
     async insertChunk(chunk: TranscriptionChunkRecord) {
       const job = await this.findByPublicId(chunk.jobPublicId)
       if (!job?.id) throw new Error(`transcription job not found: ${chunk.jobPublicId}`)
-
-      await database.insert(transcriptionChunks).values({
-        jobId: job.id,
-        chunkIndex: chunk.chunkIndex,
-        startSeconds: chunk.startSeconds,
-        endSeconds: chunk.endSeconds,
-        status: chunk.status,
-        text: chunk.text,
-        segmentsJson: chunk.segmentsJson,
-        processingSeconds: chunk.processingSeconds,
-        errorMessage: chunk.errorMessage,
-        updatedAt: new Date()
-      })
+      await insertChunk(database, job.id, chunk)
     },
 
     async listChunks(publicId: string) {

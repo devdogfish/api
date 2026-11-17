@@ -886,7 +886,7 @@ describe('transcription capability', () => {
         }
       })
       expect(calls).toEqual(['chunk-0.wav', 'chunk-1.wav', 'chunk-1.wav', 'chunk-1.wav'])
-      expect(await readdir(uploadDir)).toEqual([])
+      expect(await waitFor(() => readdir(uploadDir), files => files.length === 0)).toEqual([])
     } finally {
       await rm(uploadDir, { recursive: true, force: true })
     }

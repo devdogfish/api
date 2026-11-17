@@ -33,7 +33,7 @@ Protected endpoints use `bearerAuth`: `Authorization: Bearer <API Token>`.
 
 ## Compute admission
 
-OCR and both transcription paths share one slot per app. Two direct requests and one async worker can wait. Full direct queues return 503 `compute_busy`. Accepted async jobs retain their existing backlog and API. Cancellation frees a wait; running work holds the slot until it settles.
+OCR and both transcription paths share one slot per app. Two direct requests and one async worker can wait. Full direct queues return 503 `compute_busy`. Accepted async jobs retain their existing backlog and API. Cancellation frees a wait; running work holds the slot until it settles. Startup resumes queued or expired jobs from matching saved chunks. Terminal results commit before media cleanup.
 
 ## Dashboard edge routes
 

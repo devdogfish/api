@@ -16,7 +16,7 @@ export type PreparedTranscriptionMedia = {
 }
 
 export type TranscriptionMediaProcessor = {
-  prepare(inputPath: string): Promise<PreparedTranscriptionMedia>
+  prepare(inputPath: string, attemptDir?: string): Promise<PreparedTranscriptionMedia>
 }
 
 export type TranscriptionDurationProbe = {
@@ -99,8 +99,8 @@ export function createFfmpegMediaProcessor(opts: FfmpegMediaProcessorOptions = {
   const workDirForInput = opts.workDirForInput ?? ((inputPath: string) => `${inputPath}.work`)
 
   return {
-    async prepare(inputPath) {
-      const workDir = workDirForInput(inputPath)
+    async prepare(inputPath, attemptDir) {
+      const workDir = attemptDir ?? workDirForInput(inputPath)
       await mkdir(workDir, { recursive: true })
 
       const normalizedAudioPath = join(workDir, `${basename(inputPath)}.normalized.wav`)

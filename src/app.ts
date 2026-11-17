@@ -31,6 +31,7 @@ export type AppConfig = {
   version: string
   whisperUrl?: string
   whisperFetch?: TranscriptionFetch
+  recoverTranscriptionJobs?: boolean
   transcriptionJobStore?: TranscriptionJobStore
   transcriptionWorker?: TranscriptionWorker | null
   transcriptionMediaProcessor?: TranscriptionMediaProcessor
@@ -81,6 +82,7 @@ export function createApp(config: AppConfig) {
       whisperUrl: config.whisperUrl,
       whisperFetch: config.whisperFetch,
       jobStore: config.transcriptionJobStore,
+      recoverJobs: config.recoverTranscriptionJobs,
       worker: config.transcriptionWorker,
       mediaProcessor: config.transcriptionMediaProcessor,
       durationProbe: config.transcriptionDurationProbe,
