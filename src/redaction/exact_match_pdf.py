@@ -20,6 +20,7 @@ import pymupdf as pdf
 from pypdf import PdfReader, PdfWriter
 
 from paddle_scan import PaddleScan
+from person_names import PersonNames
 from placeholder_pixels import apply_patches, subtract
 from structured_identifiers import structured_matches, structured_value
 
@@ -55,7 +56,7 @@ def contains(sequence, term):
     return next(matching_starts(sequence, term), None) is not None
 
 
-def settings(directory):
+def settings(directory, person_names=False):
     request = json.loads((directory / "dictionary.json").read_text())
     language = request["language"]
     require(language in ("eng", "deu"), "unsupported OCR language")
@@ -63,7 +64,7 @@ def settings(directory):
     anchors = [[tokens(value) for value in page] for page in request["safeTextByPage"]]
     structured = request.get("structuredIdentifiers", False)
     require(type(structured) is bool, "invalid structured detector setting")
-    require((identifiers or structured) and all(identifiers) and all(page and all(page) for page in anchors),
+    require((identifiers or structured or person_names) and all(identifiers) and all(page and all(page) for page in anchors),
             "missing identifier or safe text")
     return identifiers, anchors, language, structured
 
@@ -175,39 +176,50 @@ def occurrence(identity, value, words):
     return Occurrence(identity, value, boxes)
 
 
-def detected_occurrences(lines, exact, structured):
+def detected_occurrences(lines, exact, structured, names):
     # Newlines preserve the distinction between separators and adjacent values.
     words = []
     text_lines = []
     parts = []
     offset = 0
+    deterministic = []
     for index, line in enumerate(lines):
         line_text = []
         for word, box in line:
             end = offset + len(word)
             words.append((offset, end, index, box))
-            parts.extend((token, index, box) for token in tokens(word))
+            parts.extend((token, index, box, offset, end) for token in tokens(word))
             line_text.append(word)
             offset = end + 1
         text_lines.append(" ".join(line_text))
-    sequence = tuple(token for token, _, _ in parts)
+    sequence = tuple(part[0] for part in parts)
     for term, (identity, value) in exact.items():
         for start in matching_starts(sequence, term):
-            yield occurrence(identity, value, ((i, box) for _, i, box in parts[start:start + len(term)]))
+            selected = parts[start:start + len(term)]
+            deterministic.append((selected[0][3], selected[-1][4]))
+            yield occurrence(identity, value, ((index, box) for _, index, box, _, _ in selected))
+    joined = "\n".join(text_lines)
+    ends = [end for _, end, _, _ in words]
+
+    def region(start, end):
+        for word_index in range(bisect_right(ends, start), len(words)):
+            begin, _, index, box = words[word_index]
+            if begin >= end:
+                break
+            yield index, box
+
     if structured:
-        joined = "\n".join(text_lines)
-        ends = [end for _, end, _, _ in words]
         for match in structured_matches(joined):
             if match.valid:
                 value = structured_value(match.kind, joined[match.start:match.end])
-                covered = []
-                start = bisect_right(ends, match.start)
-                for word_index in range(start, len(words)):
-                    begin, _, index, box = words[word_index]
-                    if begin >= match.end:
-                        break
-                    covered.append((index, box))
-                yield occurrence((match.kind, value), value, covered)
+                deterministic.append((match.start, match.end))
+                yield occurrence((match.kind, value), value, region(match.start, match.end))
+    if names is not None:
+        for start, end in names.spans(joined):
+            if any(left <= start and end <= right for left, right in deterministic):
+                continue
+            value = " ".join(joined[start:end].split())
+            yield occurrence(("PERSON", tokens(value)), value, region(start, end))
 
 
 def merge_occurrences(observed):
@@ -232,9 +244,9 @@ def merge_occurrences(observed):
     return sorted(unique, key=lambda hit: min((box.y0, box.x0) for box in hit.boxes))
 
 
-def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines):
-    observed = list(detected_occurrences(text_boxes(page), exact, structured))
-    observed.extend(detected_occurrences(ocr_lines, exact, structured))
+def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names):
+    observed = list(detected_occurrences(text_boxes(page), exact, structured, names))
+    observed.extend(detected_occurrences(ocr_lines, exact, structured, names))
     boxes = []
     placements = []
     scale = pdf.Matrix(pixels.width / page.rect.width, pixels.height / page.rect.height)
@@ -303,8 +315,9 @@ def raster_digest(pixels):
     return [pixels.width, pixels.height, hashlib.sha256(pixels.samples).hexdigest()]
 
 
-def redact(directory, review=False, vault=None, paddle_models=None):
-    terms, anchors, language, structured = settings(directory)
+def redact(directory, review=False, vault=None, paddle_models=None, person_names=False):
+    terms, anchors, language, structured = settings(directory, person_names)
+    names = PersonNames(language) if person_names else None
     manifest = []
     highlights = []
     placements_by_page = []
@@ -318,7 +331,7 @@ def redact(directory, review=False, vault=None, paddle_models=None):
             ocr_lines = paddle.lines(page, pixels) if paddle else ocr_boxes(page, pixels, language)
             if exact is not None:
                 boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
-                                                      counters, ocr_lines)
+                                                      counters, ocr_lines, names)
                 placements_by_page.append(placements)
             else:
                 boxes = list(identifier_boxes(text_boxes(page), terms, structured))
@@ -345,6 +358,8 @@ def redact(directory, review=False, vault=None, paddle_models=None):
         plan = {"digest": digest, "highlights": highlights}
         if paddle:
             plan["paddle"] = paddle.measurement()
+        if names:
+            plan["names"] = names.measurement()
         if vault is not None:
             mapping = json.dumps({"candidateSha256": digest, "values": values}, ensure_ascii=False).encode("utf-8")
             with (vault / "mapping.json").open("xb") as private:
@@ -416,8 +431,17 @@ def add_review_page(review, original, candidate_pixels, boxes):
                        color=(0.8, 0.13, 0.03), width=1)
 
 
-def verify(directory, review=False, vault=None):
-    terms, anchors, language, structured = settings(directory)
+def remove_review_labels(text, labels):
+    def replace(match):
+        label = re.sub(r"[ _]+", "_", match.group())
+        return " " if label in labels else match.group()
+
+    return re.sub(r"\[(?:PERSON|IDENTIFIER|EMAIL|IBAN|TAX[ _]ID)[ _]+[0-9]+\]", replace, text)
+
+
+def verify(directory, review=False, vault=None, person_names=False):
+    terms, anchors, language, structured = settings(directory, person_names)
+    names = PersonNames(language) if person_names else None
     candidate = checked_bytes(directory / "candidate.pdf", MAX_CANDIDATE_BYTES)
     manifest = json.loads((directory / "rasters.json").read_text())
     highlights = [[] for _ in manifest]
@@ -428,6 +452,8 @@ def verify(directory, review=False, vault=None):
         digest = hashlib.sha256(candidate).hexdigest()
         require(digest == plan["digest"], "candidate bytes changed after redaction")
         highlights = plan["highlights"]
+        require(("names" in plan) == person_names and (not names or plan["names"]["model"] == names.model),
+                "review requires the configured person model")
         require(("placements" in plan) == (vault is not None) and
                 ("mappingDigest" in plan) == (vault is not None), "review requires its Vault mapping")
         if vault is not None:
@@ -438,6 +464,8 @@ def verify(directory, review=False, vault=None):
             reverse = json.loads(mapping)
             require(reverse["candidateSha256"] == digest and isinstance(reverse["values"], dict),
                     "Vault mapping does not belong to candidate")
+            if names:
+                terms.extend(tokens(value) for label, value in reverse["values"].items() if label.startswith("[PERSON_"))
     require(not command("pdftotext", "-enc", "UTF-8", "-", "-", data=candidate).strip(), "extractable text remains")
     require(not command("pdfinfo", "-meta", "-", data=candidate).strip(), "XMP remains")
     with (pdf.open(directory / "source.pdf") as source, pdf.open(stream=candidate, filetype="pdf") as document,
@@ -454,13 +482,20 @@ def verify(directory, review=False, vault=None):
         pages = zip(document, source, manifest, anchors, highlights, placements, strict=True)
         for page, original, raster_hash, safe, boxes, patches in pages:
             embedded = check_page(document, page, original, raster_hash, allowed)
-            labels.update(apply_patches(embedded, patches, verify=True))
+            page_labels = apply_patches(embedded, patches, verify=True)
+            labels.update(page_labels)
             rendered = raster(page)
             # Audit across lines and use a different segmentation mode from the detector.
+            audited = set()
             for pixels in (embedded, rendered):
-                seen = check_identifiers(ocr_text(ocr(pixels, language, 11)),
-                                         terms, structured, "identifier remains in raster OCR")
+                text = ocr_text(ocr(pixels, language, 11))
+                seen = check_identifiers(text, terms, structured, "identifier remains in raster OCR")
                 require(all(contains(seen, term) for term in safe), "safe text missing")
+                if names and text not in audited:
+                    # These generated labels have already passed exact patch verification.
+                    require(not names.spans(remove_review_labels(text, page_labels)),
+                            "person name remains in independent OCR")
+                    audited.add(text)
             if review:
                 add_review_page(preview, original, rendered, boxes)
         objects = {xref for xref in range(1, document.xref_length()) if document.xref_object(xref) != "null"}
@@ -486,11 +521,14 @@ if __name__ == "__main__":
     parser.add_argument("location", type=Path)
     parser.add_argument("vault", nargs="?", type=Path)
     parser.add_argument("--paddle-models", type=Path)
+    parser.add_argument("--person-names", action="store_true")
     args = parser.parse_args()
     action, _, suffix = args.mode.partition("-")
     require(args.vault is None or suffix == "review", "invalid worker mode")
+    require(not args.person_names or args.vault is not None, "person names require private review and mapping")
     if action == "redact":
-        redact(args.location, review=suffix == "review", vault=args.vault, paddle_models=args.paddle_models)
+        redact(args.location, review=suffix == "review", vault=args.vault, paddle_models=args.paddle_models,
+               person_names=args.person_names)
     else:
         require(args.paddle_models is None, "verification uses independent OCR")
-        verify(args.location, review=suffix == "review", vault=args.vault)
+        verify(args.location, review=suffix == "review", vault=args.vault, person_names=args.person_names)

@@ -16,15 +16,19 @@ export type ExactMatchPdf = {
 const worker = fileURLToPath(new URL('./exact_match_pdf.py', import.meta.url))
 const maxPdfBytes = 25 * 1024 * 1024
 
-async function run(python: string, mode: string, candidate: string, vaultDraft?: string, paddleModels?: string) {
+type Detectors = { paddleModels?: string; personNames?: boolean }
+
+async function run(python: string, mode: string, candidate: string, vaultDraft?: string, detectors?: Detectors) {
+  const { paddleModels, personNames } = detectors ?? {}
   const args = [python, worker, mode, dirname(candidate)]
   if (vaultDraft) args.push(vaultDraft)
   if (paddleModels !== undefined) args.push('--paddle-models', resolve(paddleModels))
+  if (personNames) args.push('--person-names')
   const env = { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
   const child = Bun.spawn(args, {
     stdin: 'ignore', stdout: 'pipe', stderr: 'ignore',
     env: paddleModels === undefined ? env : { ...env, HOME: dirname(candidate) },
-    timeout: paddleModels === undefined ? undefined : 300_000,
+    timeout: paddleModels !== undefined || personNames ? 300_000 : undefined,
     killSignal: 'SIGKILL'
   })
   const [status, output] = await Promise.all([child.exited, new Response(child.stdout).text()])
@@ -34,12 +38,12 @@ async function run(python: string, mode: string, candidate: string, vaultDraft?:
 function createPdfRedactor<Verified>(
   admission: ComputeAdmission, scratchRoot: string, python: string, review: boolean,
   verify: (candidate: string, vaultDraft?: string) => Promise<Verified | false>,
-  paddleModels?: string
+  detectors?: Detectors
 ) {
   type Draft = { job: ExactMatchPdf; vaultDraft?: string }
   return createVerifiedPrivateRedactionExecutor<Draft, Verified>(admission, scratchRoot, {
     async redact({ job, vaultDraft }, candidate) {
-      if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || (!job.identifiers.length && job.structuredIdentifiers !== true) ||
+      if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || (!job.identifiers.length && job.structuredIdentifiers !== true && !detectors?.personNames) ||
           job.identifiers.length > 128 || job.safeTextByPage.length > 8 ||
           (vaultDraft && job.identifierTypes && (!Array.isArray(job.identifierTypes) ||
             job.identifierTypes.length !== job.identifiers.length ||
@@ -59,7 +63,7 @@ function createPdfRedactor<Verified>(
         language: job.language ?? 'eng',
         structuredIdentifiers: job.structuredIdentifiers ?? false
       }), { flag: 'wx', mode: 0o600 })
-      if (await run(python, review ? 'redact-review' : 'redact', candidate, vaultDraft, paddleModels) === false) {
+      if (await run(python, review ? 'redact-review' : 'redact', candidate, vaultDraft, detectors) === false) {
         throw new Error('Private PDF redaction failed.')
       }
     },
@@ -74,23 +78,23 @@ export function createExactMatchPdfRedactor(
   admission: ComputeAdmission, scratchRoot: string, python: string, options?: { paddleModels: string }
 ) {
   const execute = createPdfRedactor<string>(admission, scratchRoot, python, false, async candidate =>
-    await run(python, 'verify', candidate) === false ? false : candidate, options?.paddleModels
+    await run(python, 'verify', candidate) === false ? false : candidate, options
   )
   return (job: ExactMatchPdf, signal?: AbortSignal) => execute({ job }, signal)
 }
 
 /** Digests are emitted only after the worker verifies the exact candidate bytes. */
 export function createPdfReviewPreparer(
-  admission: ComputeAdmission, scratchRoot: string, python: string, paddleModels?: string
+  admission: ComputeAdmission, scratchRoot: string, python: string, detectors?: Detectors
 ) {
   type Prepared = { candidate: string; candidateSha256: string; reviewSha256: string; mappingSha256?: string }
   const execute = createPdfRedactor<Prepared>(admission, scratchRoot, python, true, async (candidate, vaultDraft) => {
-    const output = await run(python, 'verify-review', candidate, vaultDraft)
+    const output = await run(python, 'verify-review', candidate, vaultDraft, { personNames: detectors?.personNames })
     const proof = output !== false && /^([0-9a-f]{64}) ([0-9a-f]{64})(?: ([0-9a-f]{64}))?\n$/.exec(output)
     if (!proof) return false
     const [, candidateSha256, reviewSha256, mappingSha256] = proof
     if (Boolean(mappingSha256) !== Boolean(vaultDraft)) return false
     return { candidate, candidateSha256, reviewSha256, mappingSha256 }
-  }, paddleModels)
+  }, detectors)
   return (job: ExactMatchPdf, vaultDraft?: string, signal?: AbortSignal) => execute({ job, vaultDraft }, signal)
 }

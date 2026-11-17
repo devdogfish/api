@@ -126,6 +126,39 @@ measured 7.91 s cold, 2.51 s warm, 12.75 s through review preparation, and
 Use a network-disabled container for the equivalent Linux proof.
 Qualification under the shared Keep memory limit requires a separate run.
 
+Enable `personNames: true` on `createPrivatePdfReview` with an owner-only
+`vaultRoot`. The job language selects English `en_core_web_sm` (PERSON) or
+German `de_core_news_sm` (PER). Stage spaCy 3.8.18 and both 3.8.0 wheels outside
+the repo. Check the wheel digests against the official releases before installing
+them. [English model release](https://github.com/explosion/spacy-models/releases/tag/en_core_web_sm-3.8.0)
+· [German model release](https://github.com/explosion/spacy-models/releases/tag/de_core_news_sm-3.8.0)
+
+- English SHA-256 `1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85`
+- German SHA-256 `fec69fec52b1780f2d269d5af7582a5e28028738bd3190532459aeb473bfa3e7`
+
+The name model runs on the text layer and raster transcription. Exact and
+structured detections take precedence over contained name spans. Independent
+verification re-transcribes the final rasters with Tesseract, checks all detected
+person values as exact terms, and tests the new text for person spans. The model
+can miss a name in both passes. The Owner-labeled evaluation remains a release gate.
+
+```sh
+sandbox-exec -p '(version 1) (allow default) (deny network*)' \
+  bun scripts/prove-person-names.ts "$proof_python" "$paddle_models"
+```
+
+On native macOS arm64 with network access denied, the four labeled pages
+contained eight name occurrences. spaCy found four full names and produced
+zero extra person spans. The exact fallback covered the four misses.
+Independent OCR found zero labeled names in approved output. The audit refused
+a planted residual name. Conflicting name spans and missing Vault configuration
+also failed closed.
+
+| Two-page document | Preparation | spaCy load + inference CPU | Redactor peak RSS with Paddle |
+| --- | ---: | ---: | ---: |
+| English | 12.63 s | 1.207 s | 1,462 MiB |
+| German | 12.16 s | 1.198 s | 1,663 MiB |
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and

@@ -69,9 +69,9 @@ async function privateVaultRoot(path: string, scratchRoot: string) {
 
 /** In-process boundary for the trusted local owner workflow. Handles expire on discard or restart. */
 export function createPrivatePdfReview(
-  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot?: string; paddleModels?: string }
+  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot?: string; paddleModels?: string; personNames?: boolean }
 ) {
-  const prepare = createPdfReviewPreparer(admission, scratchRoot, python, options?.paddleModels)
+  const prepare = createPdfReviewPreparer(admission, scratchRoot, python, options)
   const reviews = new WeakMap<Review, ReviewRecord>()
   const inspections = new WeakMap<Inspection, Review>()
 
@@ -101,6 +101,7 @@ export function createPrivatePdfReview(
       try {
         signal?.throwIfAborted()
         const vault = options?.vaultRoot !== undefined && await privateVaultRoot(options.vaultRoot, scratchRoot)
+        if (options?.personNames && !vault) throw new InvalidPdfReviewError()
         if (vault) draft = await mkdtemp(join(vault, '.draft-'))
         const prepared = await prepare(job, draft, signal)
         candidate = prepared.candidate
