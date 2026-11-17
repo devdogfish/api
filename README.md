@@ -51,6 +51,18 @@ the same `ComputeAdmission` to it and `createApp`, and supply a trusted redactor
 verifier, and private scratch directory. The harness uses generated documents
 and keeps the source, mapping, and candidate in scratch until cleanup.
 
+The in-process `createExactMatchPdfRedactor` caller accepts PDF bytes, an
+exact-match dictionary, and safe text to retain on each page. It uses local
+text extraction and Tesseract word boxes, produces fresh raster pages, and
+independently checks decoded pixels, structure, and OCR before returning a
+review candidate. It accepts up to eight unrotated pages without a separate
+crop box, and requires English or German OCR data. The private caller owns
+the scratch lifecycle. Review and export approval are separate.
+
+```sh
+bun scripts/prove-exact-match-redaction.ts "$proof_python"
+```
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and
