@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -21,6 +22,7 @@ from structured_identifiers import structured_matches
 DPI = 300
 MAX_PAGES = 8
 MAX_PIXELS = 12_000_000
+MAX_CANDIDATE_BYTES = MAX_PAGES * MAX_PIXELS * 3 + 2 * 1024 * 1024
 
 
 def require(condition, message):
@@ -137,13 +139,18 @@ def check_identifiers(text, terms, structured, message):
     return sequence
 
 
-def save_flat(pages, path):
+def save_flat(pages, path, review):
     # Only fresh raster pages enter the writer. PyMuPDF adds Info on save.
     buffer = io.BytesIO(pages.tobytes(garbage=4, deflate=True))
     writer = PdfWriter()
     writer.append_pages_from_reader(PdfReader(buffer, strict=True))
     writer.metadata = None
-    writer.write(path)
+    with path.open("x+b") as target:
+        writer.write(target)
+        if review:
+            target.flush()
+            target.seek(0)
+            return hashlib.file_digest(target, "sha256").hexdigest()
 
 
 def check_source(document, anchors):
@@ -160,15 +167,18 @@ def raster_digest(pixels):
     return [pixels.width, pixels.height, hashlib.sha256(pixels.samples).hexdigest()]
 
 
-def redact(directory):
+def redact(directory, review=False):
     terms, anchors, language, structured = settings(directory)
     manifest = []
+    highlights = []
     with pdf.open(directory / "source.pdf") as source, pdf.open() as output:
         check_source(source, anchors)
         for page in source:
             pixels = raster(page)
             boxes = list(identifier_boxes(text_boxes(page), terms, structured))
             boxes.extend(identifier_boxes(ocr_boxes(page, pixels, language), terms, structured))
+            if review:
+                highlights.append([list(box & page.rect) for box in boxes])
             for box in boxes:
                 page.add_redact_annot(box, fill=(1, 1, 1), cross_out=False)
             if boxes:
@@ -181,8 +191,10 @@ def redact(directory):
             fresh = output.new_page(width=page.rect.width, height=page.rect.height)
             xref = fresh.insert_image(fresh.rect, pixmap=pixels, keep_proportion=False)
             output.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
-        save_flat(output, directory / "candidate.pdf")
+        digest = save_flat(output, directory / "candidate.pdf", review)
     (directory / "rasters.json").write_text(json.dumps(manifest))
+    if review:
+        (directory / "review-plan.json").write_text(json.dumps({"digest": digest, "highlights": highlights}))
 
 
 def ref(document, owner, key):
@@ -220,13 +232,48 @@ def check_page(document, page, original, digest, allowed):
     return embedded
 
 
-def verify(directory):
+def candidate_bytes(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as file:
+        info = os.fstat(file.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
+                0 < info.st_size <= MAX_CANDIDATE_BYTES, "invalid candidate file")
+        data = file.read(info.st_size + 1)
+        require(len(data) == info.st_size, "candidate size changed")
+        return data
+
+
+def add_review_page(review, original, candidate_pixels, boxes):
+    gap, header = 16, 26
+    width, height = original.rect.width, original.rect.height
+    page = review.new_page(width=2 * width + 3 * gap, height=height + header + gap)
+    left = pdf.Rect(gap, header, gap + width, header + height)
+    right = left + (width + gap, 0, width + gap, 0)
+    page.insert_text((left.x0, 17), "PRIVATE REVIEW / ORIGINAL", fontsize=10)
+    page.insert_text((right.x0, 17), "VERIFIED CANDIDATE", fontsize=10)
+    page.insert_image(left, pixmap=raster(original), keep_proportion=False)
+    page.insert_image(right, pixmap=candidate_pixels, keep_proportion=False)
+    for coords in {tuple(box) for box in boxes}:
+        box = pdf.Rect(coords)
+        require(not box.is_empty and original.rect.contains(box), "invalid review highlight")
+        page.draw_rect(box + (right.x0, right.y0, right.x0, right.y0),
+                       color=(0.8, 0.13, 0.03), width=1)
+
+
+def verify(directory, review=False):
     terms, anchors, language, structured = settings(directory)
-    candidate = directory / "candidate.pdf"
+    candidate = candidate_bytes(directory / "candidate.pdf")
     manifest = json.loads((directory / "rasters.json").read_text())
-    require(not command("pdftotext", "-enc", "UTF-8", str(candidate), "-").strip(), "extractable text remains")
-    require(not command("pdfinfo", "-meta", str(candidate)).strip(), "XMP remains")
-    with pdf.open(directory / "source.pdf") as source, pdf.open(candidate) as document:
+    highlights = [[] for _ in manifest]
+    if review:
+        plan = json.loads((directory / "review-plan.json").read_text())
+        digest = hashlib.sha256(candidate).hexdigest()
+        require(digest == plan["digest"], "candidate bytes changed after redaction")
+        highlights = plan["highlights"]
+    require(not command("pdftotext", "-enc", "UTF-8", "-", "-", data=candidate).strip(), "extractable text remains")
+    require(not command("pdfinfo", "-meta", "-", data=candidate).strip(), "XMP remains")
+    with (pdf.open(directory / "source.pdf") as source, pdf.open(stream=candidate, filetype="pdf") as document,
+          pdf.open() as preview):
         check_source(source, anchors)
         require(not document.is_repaired and not document.is_encrypted and
                 document.page_count == source.page_count == len(manifest), "invalid candidate")
@@ -236,18 +283,28 @@ def verify(directory):
         tree = ref(document, catalog, "Pages")
         require(set(document.xref_get_keys(tree)) == {"Type", "Kids", "Count"}, "unexpected page tree")
         allowed = {catalog, tree}
-        for page, original, digest, safe in zip(document, source, manifest, anchors, strict=True):
-            embedded = check_page(document, page, original, digest, allowed)
+        for page, original, raster_hash, safe, boxes in zip(document, source, manifest, anchors, highlights, strict=True):
+            embedded = check_page(document, page, original, raster_hash, allowed)
+            rendered = raster(page)
             # Audit across lines and use a different segmentation mode from the detector.
-            for pixels in (embedded, raster(page)):
+            for pixels in (embedded, rendered):
                 seen = check_identifiers(ocr_text(ocr(pixels, language, 11)),
                                          terms, structured, "identifier remains in raster OCR")
                 require(all(contains(seen, term) for term in safe), "safe text missing")
+            if review:
+                add_review_page(preview, original, rendered, boxes)
         objects = {xref for xref in range(1, document.xref_length()) if document.xref_object(xref) != "null"}
         require(objects == allowed, "unexpected PDF objects")
+        if review:
+            review_pdf = preview.tobytes(garbage=4, deflate=True)
+            with (directory / "review.pdf").open("xb") as output:
+                output.write(review_pdf)
+            print(digest, hashlib.sha256(review_pdf).hexdigest())
 
 
 if __name__ == "__main__":
     os.umask(0o077)
     mode, location = sys.argv[1:]
-    {"redact": redact, "verify": verify}[mode](Path(location))
+    action, _, suffix = mode.partition("-")
+    require(suffix in ("", "review"), "invalid worker mode")
+    {"redact": redact, "verify": verify}[action](Path(location), review=suffix == "review")

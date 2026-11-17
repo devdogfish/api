@@ -2,7 +2,7 @@ import { writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ComputeAdmission } from '../computeAdmission'
-import { createPrivateRedactionExecutor } from './privateRedaction'
+import { createVerifiedPrivateRedactionExecutor } from './privateRedaction'
 
 export type ExactMatchPdf = {
   pdf: Uint8Array
@@ -15,17 +15,20 @@ export type ExactMatchPdf = {
 const worker = fileURLToPath(new URL('./exact_match_pdf.py', import.meta.url))
 const maxPdfBytes = 25 * 1024 * 1024
 
-/** Wire only into a private composition, with its existing OCR/Whisper admission instance. */
-export function createExactMatchPdfRedactor(admission: ComputeAdmission, scratchRoot: string, python: string) {
-  async function run(mode: 'redact' | 'verify', candidate: string) {
-    const child = Bun.spawn([python, worker, mode, dirname(candidate)], {
-      stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
-      env: { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
-    })
-    return (await child.exited) === 0
-  }
+async function run(python: string, mode: string, candidate: string) {
+  const child = Bun.spawn([python, worker, mode, dirname(candidate)], {
+    stdin: 'ignore', stdout: 'pipe', stderr: 'ignore',
+    env: { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
+  })
+  const [status, output] = await Promise.all([child.exited, new Response(child.stdout).text()])
+  return status === 0 ? output : false
+}
 
-  return createPrivateRedactionExecutor<ExactMatchPdf>(admission, scratchRoot, {
+function createPdfRedactor<Verified>(
+  admission: ComputeAdmission, scratchRoot: string, python: string, review: boolean,
+  verify: (candidate: string) => Promise<Verified | false>
+) {
+  return createVerifiedPrivateRedactionExecutor<ExactMatchPdf, Verified>(admission, scratchRoot, {
     async redact(job, candidate) {
       if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || (!job.identifiers.length && job.structuredIdentifiers !== true) ||
           job.identifiers.length > 128 || job.safeTextByPage.length > 8 ||
@@ -43,10 +46,31 @@ export function createExactMatchPdfRedactor(admission: ComputeAdmission, scratch
         language: job.language ?? 'eng',
         structuredIdentifiers: job.structuredIdentifiers ?? false
       }), { flag: 'wx', mode: 0o600 })
-      if (!await run('redact', candidate)) throw new Error('Private PDF redaction failed.')
+      if (await run(python, review ? 'redact-review' : 'redact', candidate) === false) {
+        throw new Error('Private PDF redaction failed.')
+      }
     },
     verify(_job, candidate) {
-      return run('verify', candidate)
+      return verify(candidate)
     }
+  })
+}
+
+/** Wire only into a private composition, with its existing OCR/Whisper admission instance. */
+export function createExactMatchPdfRedactor(admission: ComputeAdmission, scratchRoot: string, python: string) {
+  return createPdfRedactor<string>(admission, scratchRoot, python, false, async candidate =>
+    await run(python, 'verify', candidate) === false ? false : candidate
+  )
+}
+
+/** Digests are emitted only after the worker verifies the exact candidate bytes. */
+export function createPdfReviewPreparer(admission: ComputeAdmission, scratchRoot: string, python: string) {
+  type Prepared = { candidate: string; candidateSha256: string; reviewSha256: string }
+  return createPdfRedactor<Prepared>(admission, scratchRoot, python, true, async candidate => {
+    const output = await run(python, 'verify-review', candidate)
+    const proof = output !== false && /^([0-9a-f]{64}) ([0-9a-f]{64})\n$/.exec(output)
+    if (!proof) return false
+    const [, candidateSha256, reviewSha256] = proof
+    return { candidate, candidateSha256, reviewSha256 }
   })
 }

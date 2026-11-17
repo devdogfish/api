@@ -77,6 +77,21 @@ these shapes, including phone numbers and other countries' IBANs.
 bun scripts/prove-structured-redaction.ts "$proof_python"
 ```
 
+The private owner workflow can use `createPrivatePdfReview` with the shared
+admission gate and owner-only scratch. `prepare` creates a side-by-side PDF with
+the original and the independently verified candidate, with outlines at the
+redaction locations. Treat that preview as original data. Use `inspect` to
+obtain the exact preview bytes and digests, then pass that inspection to
+`approve` after review. `readApprovedCandidate` consumes the approval and hands
+back the exact, rechecked candidate bytes. Each approval applies to one
+preparation in the current process. Call `discard` to remove its private files.
+Stable placeholders, a Vault-only reverse mapping, and release to Work remain
+release gates.
+
+```sh
+bun scripts/prove-private-pdf-review.ts "$proof_python"
+```
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and
