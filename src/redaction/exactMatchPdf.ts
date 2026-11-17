@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ComputeAdmission } from '../computeAdmission'
 import { createVerifiedPrivateRedactionExecutor } from './privateRedaction'
@@ -16,12 +16,16 @@ export type ExactMatchPdf = {
 const worker = fileURLToPath(new URL('./exact_match_pdf.py', import.meta.url))
 const maxPdfBytes = 25 * 1024 * 1024
 
-async function run(python: string, mode: string, candidate: string, vaultDraft?: string) {
+async function run(python: string, mode: string, candidate: string, vaultDraft?: string, paddleModels?: string) {
   const args = [python, worker, mode, dirname(candidate)]
   if (vaultDraft) args.push(vaultDraft)
+  if (paddleModels !== undefined) args.push('--paddle-models', resolve(paddleModels))
+  const env = { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
   const child = Bun.spawn(args, {
     stdin: 'ignore', stdout: 'pipe', stderr: 'ignore',
-    env: { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
+    env: paddleModels === undefined ? env : { ...env, HOME: dirname(candidate) },
+    timeout: paddleModels === undefined ? undefined : 300_000,
+    killSignal: 'SIGKILL'
   })
   const [status, output] = await Promise.all([child.exited, new Response(child.stdout).text()])
   return status === 0 ? output : false
@@ -29,7 +33,8 @@ async function run(python: string, mode: string, candidate: string, vaultDraft?:
 
 function createPdfRedactor<Verified>(
   admission: ComputeAdmission, scratchRoot: string, python: string, review: boolean,
-  verify: (candidate: string, vaultDraft?: string) => Promise<Verified | false>
+  verify: (candidate: string, vaultDraft?: string) => Promise<Verified | false>,
+  paddleModels?: string
 ) {
   type Draft = { job: ExactMatchPdf; vaultDraft?: string }
   return createVerifiedPrivateRedactionExecutor<Draft, Verified>(admission, scratchRoot, {
@@ -54,7 +59,7 @@ function createPdfRedactor<Verified>(
         language: job.language ?? 'eng',
         structuredIdentifiers: job.structuredIdentifiers ?? false
       }), { flag: 'wx', mode: 0o600 })
-      if (await run(python, review ? 'redact-review' : 'redact', candidate, vaultDraft) === false) {
+      if (await run(python, review ? 'redact-review' : 'redact', candidate, vaultDraft, paddleModels) === false) {
         throw new Error('Private PDF redaction failed.')
       }
     },
@@ -65,15 +70,19 @@ function createPdfRedactor<Verified>(
 }
 
 /** Wire only into a private composition, with its existing OCR/Whisper admission instance. */
-export function createExactMatchPdfRedactor(admission: ComputeAdmission, scratchRoot: string, python: string) {
+export function createExactMatchPdfRedactor(
+  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { paddleModels: string }
+) {
   const execute = createPdfRedactor<string>(admission, scratchRoot, python, false, async candidate =>
-    await run(python, 'verify', candidate) === false ? false : candidate
+    await run(python, 'verify', candidate) === false ? false : candidate, options?.paddleModels
   )
   return (job: ExactMatchPdf, signal?: AbortSignal) => execute({ job }, signal)
 }
 
 /** Digests are emitted only after the worker verifies the exact candidate bytes. */
-export function createPdfReviewPreparer(admission: ComputeAdmission, scratchRoot: string, python: string) {
+export function createPdfReviewPreparer(
+  admission: ComputeAdmission, scratchRoot: string, python: string, paddleModels?: string
+) {
   type Prepared = { candidate: string; candidateSha256: string; reviewSha256: string; mappingSha256?: string }
   const execute = createPdfRedactor<Prepared>(admission, scratchRoot, python, true, async (candidate, vaultDraft) => {
     const output = await run(python, 'verify-review', candidate, vaultDraft)
@@ -82,6 +91,6 @@ export function createPdfReviewPreparer(admission: ComputeAdmission, scratchRoot
     const [, candidateSha256, reviewSha256, mappingSha256] = proof
     if (Boolean(mappingSha256) !== Boolean(vaultDraft)) return false
     return { candidate, candidateSha256, reviewSha256, mappingSha256 }
-  })
+  }, paddleModels)
   return (job: ExactMatchPdf, vaultDraft?: string, signal?: AbortSignal) => execute({ job, vaultDraft }, signal)
 }

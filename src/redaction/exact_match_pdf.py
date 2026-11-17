@@ -1,5 +1,6 @@
 """Offline private PDF redaction pilot. Adapted from Quantself's synthetic PDF proof (#447)."""
 
+import argparse
 import csv
 import hashlib
 import io
@@ -9,7 +10,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import unicodedata
 from bisect import bisect_right
 from collections import defaultdict
@@ -19,6 +19,7 @@ from pathlib import Path
 import pymupdf as pdf
 from pypdf import PdfReader, PdfWriter
 
+from paddle_scan import PaddleScan
 from placeholder_pixels import apply_patches, subtract
 from structured_identifiers import structured_matches, structured_value
 
@@ -302,7 +303,7 @@ def raster_digest(pixels):
     return [pixels.width, pixels.height, hashlib.sha256(pixels.samples).hexdigest()]
 
 
-def redact(directory, review=False, vault=None):
+def redact(directory, review=False, vault=None, paddle_models=None):
     terms, anchors, language, structured = settings(directory)
     manifest = []
     highlights = []
@@ -311,9 +312,10 @@ def redact(directory, review=False, vault=None):
     identities, values, counters = {}, {}, defaultdict(int)
     with pdf.open(directory / "source.pdf") as source, pdf.open() as output:
         check_source(source, anchors)
+        paddle = PaddleScan(paddle_models) if paddle_models is not None else None
         for page in source:
             pixels = raster(page)
-            ocr_lines = ocr_boxes(page, pixels, language)
+            ocr_lines = paddle.lines(page, pixels) if paddle else ocr_boxes(page, pixels, language)
             if exact is not None:
                 boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
                                                       counters, ocr_lines)
@@ -341,6 +343,8 @@ def redact(directory, review=False, vault=None):
     (directory / "rasters.json").write_text(json.dumps(manifest))
     if review:
         plan = {"digest": digest, "highlights": highlights}
+        if paddle:
+            plan["paddle"] = paddle.measurement()
         if vault is not None:
             mapping = json.dumps({"candidateSha256": digest, "values": values}, ensure_ascii=False).encode("utf-8")
             with (vault / "mapping.json").open("xb") as private:
@@ -477,9 +481,16 @@ def verify(directory, review=False, vault=None):
 
 if __name__ == "__main__":
     os.umask(0o077)
-    mode, location, *private = sys.argv[1:]
-    action, _, suffix = mode.partition("-")
-    require(suffix in ("", "review") and (not private or (suffix == "review" and len(private) == 1)),
-            "invalid worker mode")
-    vault = Path(private[0]) if private else None
-    {"redact": redact, "verify": verify}[action](Path(location), review=suffix == "review", vault=vault)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("redact", "verify", "redact-review", "verify-review"))
+    parser.add_argument("location", type=Path)
+    parser.add_argument("vault", nargs="?", type=Path)
+    parser.add_argument("--paddle-models", type=Path)
+    args = parser.parse_args()
+    action, _, suffix = args.mode.partition("-")
+    require(args.vault is None or suffix == "review", "invalid worker mode")
+    if action == "redact":
+        redact(args.location, review=suffix == "review", vault=args.vault, paddle_models=args.paddle_models)
+    else:
+        require(args.paddle_models is None, "verification uses independent OCR")
+        verify(args.location, review=suffix == "review", vault=args.vault)

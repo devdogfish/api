@@ -104,6 +104,28 @@ bun scripts/prove-private-pdf-review.ts "$proof_python"
 bun scripts/prove-vault-placeholders.ts "$proof_python"
 ```
 
+Pass `{ paddleModels }` to the private caller to use local PP-OCRv5 mobile word
+boxes for raster-page detection, including scans. It can be combined with
+`vaultRoot` on `createPrivatePdfReview`. Stage PaddlePaddle 3.3.1, PaddleOCR 3.7.0,
+PaddleX 3.7.2 and the extracted detection and recognition models. Use the
+public archive checksums from the [Quantself synthetic proof](https://github.com/devdogfish/quantself/pull/447).
+A configured job fails on missing assets or unusable geometry. One CPU model
+instance handles all pages of that job and exits before independent Poppler
+and Tesseract verification. Run the private worker with network access denied.
+
+```sh
+sandbox-exec -p '(version 1) (allow default) (deny network*)' \
+  bun scripts/prove-paddle-pdf-scans.ts "$proof_python" "$paddle_models"
+```
+
+The proof reports model initialization plus first-page detection as cold,
+second-page detection in the same worker as warm, end-to-end preparation time,
+and redactor peak RSS. On native macOS arm64, the two-page synthetic scan
+measured 7.91 s cold, 2.51 s warm, 12.75 s through review preparation, and
+1,413 MiB redactor peak RSS. The audit rejected a planted line-wrap miss.
+Use a network-disabled container for the equivalent Linux proof.
+Qualification under the shared Keep memory limit requires a separate run.
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and
