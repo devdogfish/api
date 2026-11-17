@@ -66,10 +66,17 @@ The entrypoint checks `memory.max=6442450944`, `memory.swap.max=0` and
 events even if the job fails. Cgroup memory is the budget measurement.
 Sampled process-tree RSS can double-count shared pages and miss short peaks.
 
-For a sealed staging bundle, verify `SHA256SUMS`, load the image with
-`docker image load -i girke-aggregate-amd64.tar.gz`, and compare the ordered
-image layers against `linux-image.txt`. Use the loaded tag in the command
-above. Bind the staged model directories and fictional fixtures read-only.
+For a transferred sealed bundle, run from the already authorized AMD64 guest.
+
+```sh
+sh "$bundle/run-sealed-native.sh" "$bundle"
+```
+
+The helper checks native rootless Docker, capacity, archive checksums, the
+sealed config, and loaded layers. It removes an image tag only when this
+invocation loaded it. Run with `--check-bundle` before transfer to verify
+the bundle without accessing Docker. Preserve the run output, then remove
+the transferred proof files.
 
 ## Run the native macOS fallback
 
@@ -104,4 +111,7 @@ failed. Its cgroup peak up to failure was 1,739,124,736 bytes (1.62 GiB) with
 zero OOMs. An isolated replay of the same Paddle detector initialization
 returned `SIGILL` (132) with zero OOMs. The staged image config is
 `sha256:e80c08e1e4b923a2f821f531d73cf18ccd291cc0deb60419ecda5fb837ea78e0`.
-Native AMD64 aggregate qualification remains open.
+The #447 handoff identifies existing Atlas coding guest 3362. Its configured
+Atlas SSH path denied public-key access during read-only preflight. A current
+guest login and capacity check are required before transferring the sealed
+bundle. Native AMD64 aggregate qualification remains open.
