@@ -63,6 +63,20 @@ the scratch lifecycle. Review and export approval are separate.
 bun scripts/prove-exact-match-redaction.ts "$proof_python"
 ```
 
+Set `structuredIdentifiers: true` on the private caller to detect German IBANs,
+personal IdNr, and common ASCII email addresses with dotted domains. This mode
+can run with an empty exact-match dictionary. It recognizes compact and
+grouped German IBANs, compact and 2-3-3-3 IdNr, and spaces around an OCR-split
+`@`.
+A bad checksum on a supported numeric shape or a surviving unresolved `@`
+blocks verification. Checksums validate structure. Detection depends on text
+extraction and OCR. Use the exact-match dictionary for known values outside
+these shapes, including phone numbers and other countries' IBANs.
+
+```sh
+bun scripts/prove-structured-redaction.ts "$proof_python"
+```
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and

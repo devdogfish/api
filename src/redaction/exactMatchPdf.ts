@@ -9,6 +9,7 @@ export type ExactMatchPdf = {
   identifiers: readonly string[]
   safeTextByPage: readonly (readonly string[])[]
   language?: 'eng' | 'deu'
+  structuredIdentifiers?: boolean
 }
 
 const worker = fileURLToPath(new URL('./exact_match_pdf.py', import.meta.url))
@@ -26,7 +27,7 @@ export function createExactMatchPdfRedactor(admission: ComputeAdmission, scratch
 
   return createPrivateRedactionExecutor<ExactMatchPdf>(admission, scratchRoot, {
     async redact(job, candidate) {
-      if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || !job.identifiers.length ||
+      if (!job.pdf.byteLength || job.pdf.byteLength > maxPdfBytes || (!job.identifiers.length && job.structuredIdentifiers !== true) ||
           job.identifiers.length > 128 || job.safeTextByPage.length > 8 ||
           job.identifiers.some(value => typeof value !== 'string' || value.length > 256) ||
           job.safeTextByPage.some(page => !page.length || page.length > 32 ||
@@ -39,7 +40,8 @@ export function createExactMatchPdfRedactor(admission: ComputeAdmission, scratch
       await writeFile(join(directory, 'dictionary.json'), JSON.stringify({
         identifiers: job.identifiers,
         safeTextByPage: job.safeTextByPage,
-        language: job.language ?? 'eng'
+        language: job.language ?? 'eng',
+        structuredIdentifiers: job.structuredIdentifiers ?? false
       }), { flag: 'wx', mode: 0o600 })
       if (!await run('redact', candidate)) throw new Error('Private PDF redaction failed.')
     },

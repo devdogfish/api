@@ -1,4 +1,4 @@
-"""Offline exact-match pilot. Adapted from Quantself's synthetic PDF proof (#447)."""
+"""Offline private PDF redaction pilot. Adapted from Quantself's synthetic PDF proof (#447)."""
 
 import csv
 import hashlib
@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pymupdf as pdf
 from pypdf import PdfReader, PdfWriter
+
+from structured_identifiers import structured_matches
 
 DPI = 300
 MAX_PAGES = 8
@@ -53,9 +55,11 @@ def settings(directory):
     require(language in ("eng", "deu"), "unsupported OCR language")
     identifiers = [tokens(value) for value in request["identifiers"]]
     anchors = [[tokens(value) for value in page] for page in request["safeTextByPage"]]
-    require(identifiers and all(identifiers) and all(page and all(page) for page in anchors),
+    structured = request.get("structuredIdentifiers", False)
+    require(type(structured) is bool, "invalid structured detector setting")
+    require((identifiers or structured) and all(identifiers) and all(page and all(page) for page in anchors),
             "missing identifier or safe text")
-    return identifiers, anchors, language
+    return identifiers, anchors, language, structured
 
 
 def raster(page):
@@ -71,8 +75,19 @@ def ocr(pixels, language, segmentation):
 def text_boxes(page):
     lines = defaultdict(list)
     for x0, y0, x1, y1, word, block, line, _ in page.get_text("words", sort=False):
-        lines[block, line].extend((token, pdf.Rect(x0, y0, x1, y1)) for token in tokens(word))
+        lines[block, line].append((word, pdf.Rect(x0, y0, x1, y1)))
     return lines.values()
+
+
+def ocr_line(row):
+    return tuple(row[key] for key in ("block_num", "par_num", "line_num"))
+
+
+def ocr_text(rows):
+    lines = defaultdict(list)
+    for row in rows:
+        lines[ocr_line(row)].append(row["text"])
+    return "\n".join(" ".join(line) for line in lines.values())
 
 
 def ocr_boxes(page, pixels, language):
@@ -81,20 +96,45 @@ def ocr_boxes(page, pixels, language):
     for row in ocr(pixels, language, 6):
         x, y, w, h = (int(row[key]) for key in ("left", "top", "width", "height"))
         box = pdf.Rect(x, y, x + w, y + h) * scale
-        key = tuple(row[column] for column in ("block_num", "par_num", "line_num"))
-        lines[key].extend((token, box) for token in tokens(row["text"]))
+        lines[ocr_line(row)].append((row["text"], box))
     return lines.values()
 
 
-def identifier_boxes(lines, terms):
+def identifier_boxes(lines, terms, structured):
     for line in lines:
-        sequence = tuple(token for token, _ in line)
+        parts = [(token, box) for word, box in line for token in tokens(word)]
+        sequence = tuple(token for token, _ in parts)
         for term in terms:
             for i in matching_starts(sequence, term):
                 box = pdf.Rect()
-                for _, word in line[i:i + len(term)]:
+                for _, word in parts[i:i + len(term)]:
                     box |= word
                 yield box + (-2, -2, 2, 2)
+        if structured:
+            start = 0
+            spans = []
+            for word, box in line:
+                end = start + len(word)
+                spans.append((start, end, box))
+                start = end + 1
+            for match in structured_matches(" ".join(word for word, _ in line)):
+                if not match.valid:
+                    continue
+                box = pdf.Rect()
+                for start, end, word in spans:
+                    if start < match.end and end > match.start:
+                        box |= word
+                yield box + (-2, -2, 2, 2)
+
+
+def check_identifiers(text, terms, structured, message):
+    sequence = tokens(text)
+    require(not any(contains(sequence, term) for term in terms), message)
+    if structured:
+        for match in structured_matches(text):
+            require(match.valid, "uncertain structured identifier remains")
+            raise RuntimeError("structured identifier remains")
+    return sequence
 
 
 def save_flat(pages, path):
@@ -121,22 +161,21 @@ def raster_digest(pixels):
 
 
 def redact(directory):
-    terms, anchors, language = settings(directory)
+    terms, anchors, language, structured = settings(directory)
     manifest = []
     with pdf.open(directory / "source.pdf") as source, pdf.open() as output:
         check_source(source, anchors)
         for page in source:
             pixels = raster(page)
-            boxes = list(identifier_boxes(text_boxes(page), terms))
-            boxes.extend(identifier_boxes(ocr_boxes(page, pixels, language), terms))
+            boxes = list(identifier_boxes(text_boxes(page), terms, structured))
+            boxes.extend(identifier_boxes(ocr_boxes(page, pixels, language), terms, structured))
             for box in boxes:
                 page.add_redact_annot(box, fill=(1, 1, 1), cross_out=False)
             if boxes:
                 require(page.apply_redactions(images=pdf.PDF_REDACT_IMAGE_PIXELS,
                                               graphics=pdf.PDF_REDACT_LINE_ART_NONE,
                                               text=pdf.PDF_REDACT_TEXT_REMOVE), "redaction failed")
-            remaining = tokens(page.get_text())
-            require(not any(contains(remaining, term) for term in terms), "identifier remains in working text")
+            check_identifiers(page.get_text(), terms, structured, "identifier remains in working text")
             pixels = raster(page)
             manifest.append(raster_digest(pixels))
             fresh = output.new_page(width=page.rect.width, height=page.rect.height)
@@ -182,7 +221,7 @@ def check_page(document, page, original, digest, allowed):
 
 
 def verify(directory):
-    terms, anchors, language = settings(directory)
+    terms, anchors, language, structured = settings(directory)
     candidate = directory / "candidate.pdf"
     manifest = json.loads((directory / "rasters.json").read_text())
     require(not command("pdftotext", "-enc", "UTF-8", str(candidate), "-").strip(), "extractable text remains")
@@ -201,8 +240,8 @@ def verify(directory):
             embedded = check_page(document, page, original, digest, allowed)
             # Audit across lines and use a different segmentation mode from the detector.
             for pixels in (embedded, raster(page)):
-                seen = tokens(" ".join(row["text"] for row in ocr(pixels, language, 11)))
-                require(not any(contains(seen, term) for term in terms), "identifier remains in raster OCR")
+                seen = check_identifiers(ocr_text(ocr(pixels, language, 11)),
+                                         terms, structured, "identifier remains in raster OCR")
                 require(all(contains(seen, term) for term in safe), "safe text missing")
         objects = {xref for xref in range(1, document.xref_length()) if document.xref_object(xref) != "null"}
         require(objects == allowed, "unexpected PDF objects")
