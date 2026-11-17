@@ -190,6 +190,10 @@ across a text page and a Paddle scan. A date and a phone-shaped ID survived,
 and the verifier refused a planted residual. Preparation took 11.56 s.
 The redactor spent 42.9 ms of CPU on parser startup and seven calls.
 
+The [aggregate queue proof](scripts/aggregate-proof/README.md) runs the current
+private caller with retained Whisper and measures the entire workload against
+the offline Linux memory and CPU budget.
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and
