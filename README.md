@@ -35,6 +35,22 @@ Database migrations are generated in `drizzle/`. Token values are printed once;
 only hashes are stored. Pushing `main` deploys the exact revision to Hostinger
 through GitHub Actions and verifies both API and Quantself public endpoints.
 
+## Private redaction proof
+
+In an offline development environment, stage Python 3.12 with PyMuPDF 1.27.2.3
+and pypdf 7.1.0, Poppler, and Tesseract with English and German trained data.
+Pass the Python executable and the merged Quantself synthetic PDF proof to the
+disposable harness. [Source proof](https://github.com/devdogfish/quantself/pull/447)
+
+```sh
+bun scripts/prove-private-redaction.ts "$proof_python" "$quantself_proof"
+```
+
+The private executor is callable in process. A private composition must pass
+the same `ComputeAdmission` to it and `createApp`, and supply a trusted redactor,
+verifier, and private scratch directory. The harness uses generated documents
+and keeps the source, mapping, and candidate in scratch until cleanup.
+
 ## Public routing
 
 Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and

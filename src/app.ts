@@ -55,9 +55,8 @@ export type AppConfig = {
   mailSender?: MailSender
 }
 
-export function createApp(config: AppConfig) {
+export function createApp(config: AppConfig, admission = new ComputeAdmission()) {
   const app = new OpenAPIHono<AppEnv>()
-  const admission = new ComputeAdmission()
 
   app.use('*', requestLogger())
   app.use('*', bodyLimit({ maxSize: 2 * 1024 * 1024 * 1024 }))
