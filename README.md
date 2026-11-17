@@ -85,11 +85,23 @@ obtain the exact preview bytes and digests, then pass that inspection to
 `approve` after review. `readApprovedCandidate` consumes the approval and hands
 back the exact, rechecked candidate bytes. Each approval applies to one
 preparation in the current process. Call `discard` to remove its private files.
-Stable placeholders, a Vault-only reverse mapping, and release to Work remain
-release gates.
+Pass `{ vaultRoot }` to enable placeholders. Use an owner-only Vault directory
+outside scratch and Work. Exact entries default to `[IDENTIFIER_n]` and may be
+typed as `PERSON` with a parallel `identifierTypes` array. Structured entries
+use `[IBAN_n]`, `[TAX_ID_n]` and `[EMAIL_n]`. Repeated normalized values on a
+document share a label. Supported wraps can span adjacent lines on one page.
+Conflicting regions and unreadably small replacements are refused.
+
+The worker writes the private reverse mapping directly to Vault. The review
+checks the mapping digest with the PDF and preview digests. Discard removes an
+unhanded draft's mapping. After reading the approved candidate, the owner can
+find its mapping at `<vaultRoot>/<candidateSha256>/mapping.json`. Prepare again
+and obtain fresh approval when revising a draft. Work integration and its
+filesystem isolation are deployment requirements.
 
 ```sh
 bun scripts/prove-private-pdf-review.ts "$proof_python"
+bun scripts/prove-vault-placeholders.ts "$proof_python"
 ```
 
 ## Public routing

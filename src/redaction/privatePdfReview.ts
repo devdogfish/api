@@ -1,16 +1,19 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { open, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, mkdtemp, open, realpath, rename, rm, stat } from 'node:fs/promises'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { ComputeAdmission } from '../computeAdmission'
 import { createPdfReviewPreparer, type ExactMatchPdf } from './exactMatchPdf'
 
 type Review = Readonly<{ candidateSha256: string; reviewSha256: string }>
 type Inspection = Readonly<Review & { pdf: Buffer }>
 type Approval = Readonly<{ candidateSha256: string }>
+type Mapping = { directory: string; digest: string; retained: boolean }
+type ReviewRecord = { candidate: string; mapping?: Mapping; approval?: Approval }
 
 const maxCandidateBytes = 8 * 12_000_000 * 3 + 2 * 1024 * 1024
 const maxReviewBytes = 2 * maxCandidateBytes
+const maxMappingBytes = 4 * 1024 * 1024
 
 export class InvalidPdfReviewError extends Error {
   constructor() {
@@ -18,7 +21,7 @@ export class InvalidPdfReviewError extends Error {
   }
 }
 
-async function checkPdf(path: string, digest: string, limit: number, snapshot = false) {
+async function checkArtifact(path: string, digest: string, limit: number, snapshot = false) {
   try {
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
@@ -49,10 +52,27 @@ async function checkPdf(path: string, digest: string, limit: number, snapshot = 
   }
 }
 
+function contains(parent: string, child: string) {
+  const path = relative(parent, child)
+  return !isAbsolute(path) && path !== '..' && !path.startsWith('..' + sep)
+}
+
+async function privateVaultRoot(path: string, scratchRoot: string) {
+  const [vault, scratch] = await Promise.all([realpath(path), realpath(scratchRoot)])
+  const info = await stat(vault)
+  if (!info.isDirectory() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid?.() ||
+      contains(vault, scratch) || contains(scratch, vault)) {
+    throw new InvalidPdfReviewError()
+  }
+  return vault
+}
+
 /** In-process boundary for the trusted local owner workflow. Handles expire on discard or restart. */
-export function createPrivatePdfReview(admission: ComputeAdmission, scratchRoot: string, python: string) {
+export function createPrivatePdfReview(
+  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot: string }
+) {
   const prepare = createPdfReviewPreparer(admission, scratchRoot, python)
-  const reviews = new WeakMap<Review, { candidate: string; approval?: Approval }>()
+  const reviews = new WeakMap<Review, ReviewRecord>()
   const inspections = new WeakMap<Inspection, Review>()
 
   function active(review: Review) {
@@ -62,25 +82,57 @@ export function createPrivatePdfReview(admission: ComputeAdmission, scratchRoot:
   }
 
   function checkCandidate(review: Review, path: string, snapshot = false) {
-    return checkPdf(path, review.candidateSha256, maxCandidateBytes, snapshot)
+    return checkArtifact(path, review.candidateSha256, maxCandidateBytes, snapshot)
   }
 
   function checkPreview(review: Review, path: string, snapshot = false) {
-    return checkPdf(join(dirname(path), 'review.pdf'), review.reviewSha256, maxReviewBytes, snapshot)
+    return checkArtifact(join(dirname(path), 'review.pdf'), review.reviewSha256, maxReviewBytes, snapshot)
+  }
+
+  async function checkMapping(mapping?: Mapping) {
+    if (mapping) await checkArtifact(join(mapping.directory, 'mapping.json'), mapping.digest, maxMappingBytes)
   }
 
   return {
     async prepare(job: ExactMatchPdf, signal?: AbortSignal): Promise<Review> {
-      const { candidate, candidateSha256, reviewSha256 } = await prepare(job, signal)
-      const review = Object.freeze({ candidateSha256, reviewSha256 })
-      reviews.set(review, { candidate })
-      return review
+      let draft: string | undefined
+      let candidate: string | undefined
+      let mapping: Mapping | undefined
+      try {
+        signal?.throwIfAborted()
+        const vault = options && await privateVaultRoot(options.vaultRoot, scratchRoot)
+        if (vault) draft = await mkdtemp(join(vault, '.draft-'))
+        const prepared = await prepare(job, draft, signal)
+        candidate = prepared.candidate
+        const { candidateSha256, reviewSha256, mappingSha256 } = prepared
+        if (vault) {
+          if (!draft || !mappingSha256) throw new InvalidPdfReviewError()
+          const directory = join(vault, candidateSha256)
+          await mkdir(directory, { mode: 0o700 })
+          mapping = { directory, digest: mappingSha256, retained: false }
+          await rename(join(draft, 'mapping.json'), join(directory, 'mapping.json'))
+          await checkMapping(mapping)
+          await rm(draft, { recursive: true, force: true })
+        }
+        signal?.throwIfAborted()
+        const review = Object.freeze({ candidateSha256, reviewSha256 })
+        reviews.set(review, { candidate, mapping })
+        return review
+      } catch (error) {
+        await Promise.all([
+          draft && rm(draft, { recursive: true, force: true }),
+          candidate && rm(dirname(candidate), { recursive: true, force: true }),
+          mapping && rm(mapping.directory, { recursive: true, force: true })
+        ])
+        throw error
+      }
     },
 
     async inspect(review: Review) {
-      const { candidate } = active(review)
+      const { candidate, mapping } = active(review)
       await checkCandidate(review, candidate)
       const pdf = await checkPreview(review, candidate, true)
+      await checkMapping(mapping)
       active(review)
       const inspection = Object.freeze({ ...review, pdf })
       inspections.set(inspection, review)
@@ -88,13 +140,14 @@ export function createPrivatePdfReview(admission: ComputeAdmission, scratchRoot:
     },
 
     async approve(review: Review, displayed: Inspection): Promise<Approval> {
-      const { candidate } = active(review)
+      const { candidate, mapping } = active(review)
       if (inspections.get(displayed) !== review ||
           createHash('sha256').update(displayed.pdf).digest('hex') !== review.reviewSha256) {
         throw new InvalidPdfReviewError()
       }
       await checkCandidate(review, candidate)
       await checkPreview(review, candidate)
+      await checkMapping(mapping)
       const approval = Object.freeze({ candidateSha256: review.candidateSha256 })
       active(review).approval = approval
       return approval
@@ -107,14 +160,19 @@ export function createPrivatePdfReview(admission: ComputeAdmission, scratchRoot:
       delete record.approval
       await checkPreview(review, record.candidate)
       const pdf = await checkCandidate(review, record.candidate, true)
+      await checkMapping(record.mapping)
       active(review)
+      if (record.mapping) record.mapping.retained = true
       return pdf
     },
 
     async discard(review: Review) {
-      const { candidate } = active(review)
+      const { candidate, mapping } = active(review)
       reviews.delete(review)
-      await rm(dirname(candidate), { recursive: true, force: true })
+      await Promise.all([
+        rm(dirname(candidate), { recursive: true, force: true }),
+        mapping && !mapping.retained && rm(mapping.directory, { recursive: true, force: true })
+      ])
     }
   }
 }

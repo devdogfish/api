@@ -11,13 +11,16 @@ import stat
 import subprocess
 import sys
 import unicodedata
+from bisect import bisect_right
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf as pdf
 from pypdf import PdfReader, PdfWriter
 
-from structured_identifiers import structured_matches
+from placeholder_pixels import apply_patches, subtract
+from structured_identifiers import structured_matches, structured_value
 
 DPI = 300
 MAX_PAGES = 8
@@ -129,6 +132,136 @@ def identifier_boxes(lines, terms, structured):
                 yield box + (-2, -2, 2, 2)
 
 
+@dataclass
+class Occurrence:
+    identity: tuple
+    value: str
+    boxes: list
+
+
+def exact_identities(directory, structured):
+    request = json.loads((directory / "dictionary.json").read_text())
+    values = request["identifiers"]
+    types = request.get("identifierTypes", [None] * len(values))
+    require(len(types) == len(values), "identifier types do not match dictionary")
+    exact = {}
+    for value, kind in zip(values, types, strict=True):
+        require(kind in (None, "IDENTIFIER", "PERSON"), "unsupported exact identifier type")
+        term = tokens(value)
+        trimmed = value.strip()
+        known = next((m for m in structured_matches(trimmed)
+                      if m.valid and m.start == 0 and m.end == len(trimmed)), None) if structured else None
+        if known:
+            require(kind in (None, "IDENTIFIER"), "conflicting identifier type")
+            canonical = structured_value(known.kind, trimmed)
+            identity = (known.kind, canonical)
+        else:
+            canonical = value
+            identity = (kind or "IDENTIFIER", term)
+        prior = exact.setdefault(term, (identity, canonical))
+        require(prior[0] == identity, "conflicting normalized exact identifiers")
+    return exact
+
+
+def occurrence(identity, value, words):
+    lines = {}
+    for index, box in words:
+        lines[index] = lines.get(index, pdf.Rect()) | box
+    boxes = list(lines.values())
+    for left, right in zip(boxes, boxes[1:]):
+        require(left.y0 < right.y0 and right.y0 - left.y1 <= 2 * max(left.height, right.height),
+                "uncertain identifier line wrap")
+    return Occurrence(identity, value, boxes)
+
+
+def detected_occurrences(lines, exact, structured):
+    # Newlines preserve the distinction between separators and adjacent values.
+    words = []
+    text_lines = []
+    parts = []
+    offset = 0
+    for index, line in enumerate(lines):
+        line_text = []
+        for word, box in line:
+            end = offset + len(word)
+            words.append((offset, end, index, box))
+            parts.extend((token, index, box) for token in tokens(word))
+            line_text.append(word)
+            offset = end + 1
+        text_lines.append(" ".join(line_text))
+    sequence = tuple(token for token, _, _ in parts)
+    for term, (identity, value) in exact.items():
+        for start in matching_starts(sequence, term):
+            yield occurrence(identity, value, ((i, box) for _, i, box in parts[start:start + len(term)]))
+    if structured:
+        joined = "\n".join(text_lines)
+        ends = [end for _, end, _, _ in words]
+        for match in structured_matches(joined):
+            if match.valid:
+                value = structured_value(match.kind, joined[match.start:match.end])
+                covered = []
+                start = bisect_right(ends, match.start)
+                for word_index in range(start, len(words)):
+                    begin, _, index, box = words[word_index]
+                    if begin >= match.end:
+                        break
+                    covered.append((index, box))
+                yield occurrence((match.kind, value), value, covered)
+
+
+def merge_occurrences(observed):
+    unique = []
+    for current in observed:
+        overlaps = [prior for prior in unique
+                    if any(a.intersects(b) for a in prior.boxes for b in current.boxes)]
+        if not overlaps:
+            unique.append(current)
+            continue
+        require(len(overlaps) == 1 and overlaps[0].identity == current.identity,
+                "conflicting identifier geometries")
+        prior = overlaps[0]
+        for box in current.boxes:
+            touched = [candidate for candidate in prior.boxes if candidate.intersects(box)]
+            require(len(touched) <= 1, "conflicting identifier line wrap")
+            if touched:
+                index = prior.boxes.index(touched[0])
+                prior.boxes[index] |= box
+            else:
+                prior.boxes.append(box)
+    return sorted(unique, key=lambda hit: min((box.y0, box.x0) for box in hit.boxes))
+
+
+def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines):
+    observed = list(detected_occurrences(text_boxes(page), exact, structured))
+    observed.extend(detected_occurrences(ocr_lines, exact, structured))
+    boxes = []
+    placements = []
+    scale = pdf.Matrix(pixels.width / page.rect.width, pixels.height / page.rect.height)
+    for hit in merge_occurrences(observed):
+        if hit.identity not in identities:
+            kind = hit.identity[0]
+            counters[kind] += 1
+            label = f"[{kind}_{counters[kind]}]"
+            identities[hit.identity] = label
+            values[label] = hit.value
+        label = identities[hit.identity]
+        fragments = [(box + (-2, -2, 2, 2)) & page.rect for box in hit.boxes]
+        pixel_boxes = [(box * scale).irect & pixels.irect for box in fragments]
+        # Use the fragment that accommodates the largest readable label.
+        display = max(range(len(pixel_boxes)), key=lambda i: min(
+            pixel_boxes[i].width / (len(label) * 0.6), pixel_boxes[i].height / 1.3))
+        boxes.extend(fragments)
+        painted = [pixel_boxes.pop(display)]
+        placements.append((list(painted[0]), label))
+        for box in pixel_boxes:
+            uncovered = [box]
+            for covered in painted:
+                uncovered = [part for piece in uncovered for part in subtract(piece, covered)]
+            placements.extend((list(part), None) for part in uncovered)
+            painted.extend(uncovered)
+    return boxes, placements
+
+
 def check_identifiers(text, terms, structured, message):
     sequence = tokens(text)
     require(not any(contains(sequence, term) for term in terms), message)
@@ -139,12 +272,14 @@ def check_identifiers(text, terms, structured, message):
     return sequence
 
 
-def save_flat(pages, path, review):
+def save_flat(pages, path, review, placeholders):
     # Only fresh raster pages enter the writer. PyMuPDF adds Info on save.
     buffer = io.BytesIO(pages.tobytes(garbage=4, deflate=True))
     writer = PdfWriter()
     writer.append_pages_from_reader(PdfReader(buffer, strict=True))
     writer.metadata = None
+    if placeholders:
+        writer.generate_file_identifiers()
     with path.open("x+b") as target:
         writer.write(target)
         if review:
@@ -167,16 +302,25 @@ def raster_digest(pixels):
     return [pixels.width, pixels.height, hashlib.sha256(pixels.samples).hexdigest()]
 
 
-def redact(directory, review=False):
+def redact(directory, review=False, vault=None):
     terms, anchors, language, structured = settings(directory)
     manifest = []
     highlights = []
+    placements_by_page = []
+    exact = exact_identities(directory, structured) if vault is not None else None
+    identities, values, counters = {}, {}, defaultdict(int)
     with pdf.open(directory / "source.pdf") as source, pdf.open() as output:
         check_source(source, anchors)
         for page in source:
             pixels = raster(page)
-            boxes = list(identifier_boxes(text_boxes(page), terms, structured))
-            boxes.extend(identifier_boxes(ocr_boxes(page, pixels, language), terms, structured))
+            ocr_lines = ocr_boxes(page, pixels, language)
+            if exact is not None:
+                boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
+                                                      counters, ocr_lines)
+                placements_by_page.append(placements)
+            else:
+                boxes = list(identifier_boxes(text_boxes(page), terms, structured))
+                boxes.extend(identifier_boxes(ocr_lines, terms, structured))
             if review:
                 highlights.append([list(box & page.rect) for box in boxes])
             for box in boxes:
@@ -187,14 +331,22 @@ def redact(directory, review=False):
                                               text=pdf.PDF_REDACT_TEXT_REMOVE), "redaction failed")
             check_identifiers(page.get_text(), terms, structured, "identifier remains in working text")
             pixels = raster(page)
+            if vault is not None:
+                apply_patches(pixels, placements)
             manifest.append(raster_digest(pixels))
             fresh = output.new_page(width=page.rect.width, height=page.rect.height)
             xref = fresh.insert_image(fresh.rect, pixmap=pixels, keep_proportion=False)
             output.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
-        digest = save_flat(output, directory / "candidate.pdf", review)
+        digest = save_flat(output, directory / "candidate.pdf", review, vault is not None)
     (directory / "rasters.json").write_text(json.dumps(manifest))
     if review:
-        (directory / "review-plan.json").write_text(json.dumps({"digest": digest, "highlights": highlights}))
+        plan = {"digest": digest, "highlights": highlights}
+        if vault is not None:
+            mapping = json.dumps({"candidateSha256": digest, "values": values}, ensure_ascii=False).encode("utf-8")
+            with (vault / "mapping.json").open("xb") as private:
+                private.write(mapping)
+            plan.update(placements=placements_by_page, mappingDigest=hashlib.sha256(mapping).hexdigest())
+        (directory / "review-plan.json").write_text(json.dumps(plan))
 
 
 def ref(document, owner, key):
@@ -232,14 +384,14 @@ def check_page(document, page, original, digest, allowed):
     return embedded
 
 
-def candidate_bytes(path):
+def checked_bytes(path, limit):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as file:
         info = os.fstat(file.fileno())
         require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
-                0 < info.st_size <= MAX_CANDIDATE_BYTES, "invalid candidate file")
+                0 < info.st_size <= limit, "invalid private artifact")
         data = file.read(info.st_size + 1)
-        require(len(data) == info.st_size, "candidate size changed")
+        require(len(data) == info.st_size, "private artifact size changed")
         return data
 
 
@@ -260,16 +412,28 @@ def add_review_page(review, original, candidate_pixels, boxes):
                        color=(0.8, 0.13, 0.03), width=1)
 
 
-def verify(directory, review=False):
+def verify(directory, review=False, vault=None):
     terms, anchors, language, structured = settings(directory)
-    candidate = candidate_bytes(directory / "candidate.pdf")
+    candidate = checked_bytes(directory / "candidate.pdf", MAX_CANDIDATE_BYTES)
     manifest = json.loads((directory / "rasters.json").read_text())
     highlights = [[] for _ in manifest]
+    placements = [[] for _ in manifest]
+    labels = set()
     if review:
         plan = json.loads((directory / "review-plan.json").read_text())
         digest = hashlib.sha256(candidate).hexdigest()
         require(digest == plan["digest"], "candidate bytes changed after redaction")
         highlights = plan["highlights"]
+        require(("placements" in plan) == (vault is not None) and
+                ("mappingDigest" in plan) == (vault is not None), "review requires its Vault mapping")
+        if vault is not None:
+            placements = plan["placements"]
+            mapping = checked_bytes(vault / "mapping.json", 4 * 1024 * 1024)
+            mapping_digest = hashlib.sha256(mapping).hexdigest()
+            require(mapping_digest == plan["mappingDigest"], "Vault mapping changed before verification")
+            reverse = json.loads(mapping)
+            require(reverse["candidateSha256"] == digest and isinstance(reverse["values"], dict),
+                    "Vault mapping does not belong to candidate")
     require(not command("pdftotext", "-enc", "UTF-8", "-", "-", data=candidate).strip(), "extractable text remains")
     require(not command("pdfinfo", "-meta", "-", data=candidate).strip(), "XMP remains")
     with (pdf.open(directory / "source.pdf") as source, pdf.open(stream=candidate, filetype="pdf") as document,
@@ -283,8 +447,10 @@ def verify(directory, review=False):
         tree = ref(document, catalog, "Pages")
         require(set(document.xref_get_keys(tree)) == {"Type", "Kids", "Count"}, "unexpected page tree")
         allowed = {catalog, tree}
-        for page, original, raster_hash, safe, boxes in zip(document, source, manifest, anchors, highlights, strict=True):
+        pages = zip(document, source, manifest, anchors, highlights, placements, strict=True)
+        for page, original, raster_hash, safe, boxes, patches in pages:
             embedded = check_page(document, page, original, raster_hash, allowed)
+            labels.update(apply_patches(embedded, patches, verify=True))
             rendered = raster(page)
             # Audit across lines and use a different segmentation mode from the detector.
             for pixels in (embedded, rendered):
@@ -295,16 +461,25 @@ def verify(directory, review=False):
                 add_review_page(preview, original, rendered, boxes)
         objects = {xref for xref in range(1, document.xref_length()) if document.xref_object(xref) != "null"}
         require(objects == allowed, "unexpected PDF objects")
+        if vault is not None:
+            require(labels == set(reverse["values"]) and
+                    all(isinstance(value, str) and value for value in reverse["values"].values()),
+                    "Vault mapping and rendered placeholders differ")
         if review:
             review_pdf = preview.tobytes(garbage=4, deflate=True)
             with (directory / "review.pdf").open("xb") as output:
                 output.write(review_pdf)
-            print(digest, hashlib.sha256(review_pdf).hexdigest())
+            proof = [digest, hashlib.sha256(review_pdf).hexdigest()]
+            if vault is not None:
+                proof.append(mapping_digest)
+            print(*proof)
 
 
 if __name__ == "__main__":
     os.umask(0o077)
-    mode, location = sys.argv[1:]
+    mode, location, *private = sys.argv[1:]
     action, _, suffix = mode.partition("-")
-    require(suffix in ("", "review"), "invalid worker mode")
-    {"redact": redact, "verify": verify}[action](Path(location), review=suffix == "review")
+    require(suffix in ("", "review") and (not private or (suffix == "review" and len(private) == 1)),
+            "invalid worker mode")
+    vault = Path(private[0]) if private else None
+    {"redact": redact, "verify": verify}[action](Path(location), review=suffix == "review", vault=vault)

@@ -9,6 +9,7 @@ class Match(NamedTuple):
     start: int
     end: int
     valid: bool
+    kind: str | None = None
 
 
 DE_IBAN = re.compile(r"(?<!\w)[Dd][Ee][\s-]*[0-9]{2}(?:[\s-]*[0-9]){18}(?!\w)")
@@ -46,25 +47,32 @@ def tax_id_checksum(text):
     return (11 - product) % 10 == check
 
 
-def numeric_match(text, match, checksum):
+def numeric_match(text, match, checksum, kind):
     # Refuse a prefix of a longer formatted number on the same line.
     valid = not EXTRA_DIGIT.match(text, match.end()) and checksum(match.group())
-    return Match(match.start(), match.end(), valid)
+    return Match(match.start(), match.end(), valid, kind)
 
 
 def structured_matches(text):
     # A DE IBAN takes precedence over numeric spans within that same value.
-    ibans = [numeric_match(text, match, iban_checksum) for match in DE_IBAN.finditer(text)]
+    ibans = [numeric_match(text, match, iban_checksum, "IBAN") for match in DE_IBAN.finditer(text)]
     yield from ibans
     for match in TAX_ID.finditer(text):
         if not any(match.start() < iban.end and iban.start < match.end() for iban in ibans):
-            yield numeric_match(text, match, tax_id_checksum)
+            yield numeric_match(text, match, tax_id_checksum, "TAX_ID")
     recognized_at_signs = set()
     for match in EMAIL.finditer(text):
         local, domain = match.group().split("@")
         if len(local.rstrip()) <= 64 and len(domain.lstrip()) <= 253:
             recognized_at_signs.add(match.start() + len(local))
-            yield Match(match.start(), match.end(), True)
+            yield Match(match.start(), match.end(), True, "EMAIL")
     for match in re.finditer("@", text):
         if match.start() not in recognized_at_signs:
             yield Match(match.start(), match.end(), False)
+
+
+def structured_value(kind, text):
+    if kind == "EMAIL":
+        local, domain = text.split("@")
+        return local.rstrip() + "@" + domain.lstrip().lower()
+    return re.sub(r"[\s-]+", "", text).upper()
