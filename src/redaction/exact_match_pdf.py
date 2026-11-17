@@ -341,7 +341,8 @@ def raster_digest(pixels):
     return [pixels.width, pixels.height, hashlib.sha256(pixels.samples).hexdigest()]
 
 
-def redact(directory, review=False, vault=None, paddle_models=None, person_names=False, phone_regions=None):
+def redact(directory, review=False, vault=None, paddle_models=None, person_names=False, phone_regions=None,
+           observe=None):
     terms, anchors, language, structured = settings(directory, person_names or phone_regions is not None)
     phones = PhoneNumbers(phone_regions) if phone_regions is not None else None
     names = PersonNames(language) if person_names else None
@@ -356,6 +357,8 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
         for page in source:
             pixels = raster(page)
             ocr_lines = paddle.lines(page, pixels) if paddle else ocr_boxes(page, pixels, language)
+            if observe is not None:
+                observe(page, pixels, ocr_lines, exact, structured, names, phones)
             if exact is not None:
                 boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
                                                       counters, ocr_lines, names, phones)
@@ -469,7 +472,7 @@ def remove_review_labels(text, labels):
     return re.sub(r"\[(?:PERSON|IDENTIFIER|EMAIL|IBAN|PHONE|TAX[ _]ID)[ _]+[0-9]+\]", replace, text)
 
 
-def verify(directory, review=False, vault=None, person_names=False, phone_regions=None):
+def verify(directory, review=False, vault=None, person_names=False, phone_regions=None, observe_ocr=None):
     terms, anchors, language, structured = settings(directory, person_names or phone_regions is not None)
     phones = PhoneNumbers(phone_regions) if phone_regions is not None else None
     known_phones = set()
@@ -527,6 +530,8 @@ def verify(directory, review=False, vault=None, person_names=False, phone_region
             audited = set()
             for pixels in (embedded, rendered):
                 text = ocr_text(ocr(pixels, language, 11))
+                if observe_ocr is not None:
+                    observe_ocr(page.number, text)
                 seen = check_identifiers(text, terms, structured, "identifier remains in raster OCR",
                                          phones, known_phones)
                 require(all(contains(seen, term) for term in safe), "safe text missing")

@@ -124,3 +124,56 @@ The #447 handoff identifies existing Atlas coding guest 3362. Its configured
 Atlas SSH path denied public-key access during read-only preflight. A current
 guest login and capacity check are required before transferring the sealed
 bundle. Native AMD64 aggregate qualification remains open.
+
+## Owner-labeled accuracy evaluation
+
+On the Owner's Mac, stage the existing Python environment, local Paddle
+models, Poppler and Tesseract language data before running. Keep the manifest
+and PDFs in one Owner-only directory outside Git (directory mode 0700, files
+mode 0600). PDF entries use basenames relative to the manifest. For example,
+with fictional values:
+
+```json
+{
+  "documents": [{
+    "pdf": "fictional.pdf",
+    "dictionary": {
+      "language": "eng",
+      "identifiers": ["Fictional Anchor"],
+      "structuredIdentifiers": true,
+      "safeTextByPage": [["public index", "end of sample"]]
+    },
+    "expected": [{
+      "page": 1,
+      "value": "Fictional Anchor",
+      "count": 1,
+      "detectors": ["exact"]
+    }]
+  }]
+}
+```
+
+Keep the deployed exact list in `dictionary.identifiers` and the independently
+labeled values in `expected`. Use one entry per value per page and record its
+occurrence count and applicable detectors. Labels can target `exact`,
+`structured`, `person` or `phone`. Supply safe text for every page and use
+`eng` or `deu` per document. Enable only the detectors and regions being
+evaluated.
+
+```sh
+sh scripts/evaluate-private-redaction.sh "$staged_python" "$owner_manifest" \
+  --paddle-models "$paddle_dir" --person-names --phone-regions DE,CA
+```
+
+The launcher denies network access before opening the inputs. The evaluator
+reports one JSON line with aggregate counts. Per-detector misses measure each
+assigned detector on its own, before exact-list fallback or detector precedence.
+Residuals count labeled occurrences found by independent OCR of the candidate,
+deduplicated across the rendered and embedded views of each page. The existing
+verifier also checks PDF structure, extractable text, and safe anchors. A source
+count mismatch in independent source OCR, unexpected extracted occurrences, or
+incomplete verification gives a null residual count and a nonzero exit.
+Any residual gives a nonzero exit. Review PDFs, mappings and scratch copies
+stay in the Owner-only directory and are removed on normal exit or handled
+failure. This command
+performs no export or approval.
