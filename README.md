@@ -113,6 +113,23 @@ bun scripts/prove-private-pdf-review.ts "$proof_python"
 bun scripts/prove-vault-placeholders.ts "$proof_python"
 ```
 
+The disposable permission proof uses separate Work and Vault tmpfs mounts,
+a Work reader in its own group, and a separate mapping owner. With Work owned
+by the caller and setgid to the reader group at mode `2750`, caller umask
+`0027` permits that reader to read the exact approved PDF. The reader cannot
+write to the PDF or read the private mapping. Umask `0077` masks the Work
+PDF's group-read bit, so the reader receives permission denied. The mapping
+stays accessible to its owner in both cases.
+
+Run with the staged aggregate proof image and the source checkout mounted read-only.
+
+```sh
+docker run --rm --pull=never --platform linux/amd64 --network none \
+  --mount "type=bind,source=$PWD,target=/fixture,readonly" --workdir /fixture \
+  --tmpfs /fixture-work:rw,nosuid,nodev,mode=0711 --tmpfs /fixture-vault:rw,nosuid,nodev,mode=0711 \
+  --entrypoint python girke-213-aggregate-proof:407c8bb7 scripts/prove-work-vault-permissions.py
+```
+
 Pass `{ paddleModels }` to the private caller to use local PP-OCRv5 mobile word
 boxes for raster-page detection, including scans. It can be combined with
 `vaultRoot` on `createPrivatePdfReview`. Stage PaddlePaddle 3.3.1, PaddleOCR 3.7.0,
