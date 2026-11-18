@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { link, mkdir, mkdtemp, open, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { ComputeAdmission } from '../computeAdmission'
 import { createPdfReviewPreparer, type ExactMatchPdf } from './exactMatchPdf'
@@ -67,14 +67,36 @@ async function privateVaultRoot(path: string, scratchRoot: string) {
   return vault
 }
 
+async function trustedDirectory(path: string, owner: number) {
+  const parent = dirname(path)
+  if (parent !== path) await trustedDirectory(parent, owner)
+  const info = await lstat(path)
+  // A trusted sticky parent (such as /tmp) protects entries owned by trusted users.
+  if (!info.isDirectory() || (info.uid !== owner && info.uid !== 0) ||
+      ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0)) {
+    throw new InvalidPdfReviewError()
+  }
+  return info
+}
+
 async function workDirectory(path: string, vault: string, scratchRoot: string) {
   const [work, scratch] = await Promise.all([realpath(path), realpath(scratchRoot)])
-  const info = await stat(work)
-  if (!info.isDirectory() || (info.mode & 0o022) !== 0 || info.uid !== process.getuid?.() ||
+  const owner = process.getuid?.()
+  if (owner === undefined ||
       [vault, scratch].some(privateRoot => contains(work, privateRoot) || contains(privateRoot, work))) {
     throw new InvalidPdfReviewError()
   }
-  return work
+  const [info] = await Promise.all([
+    trustedDirectory(work, owner),
+    trustedDirectory(vault, owner),
+    trustedDirectory(scratch, owner)
+  ])
+  // macOS inherits the directory group without setgid. Verify the inode group before publishing.
+  const requiredMode = process.platform === 'darwin' ? 0o050 : 0o2050
+  if (info.uid !== owner || (info.mode & requiredMode) !== requiredMode || (info.mode & 0o022) !== 0) {
+    throw new InvalidPdfReviewError()
+  }
+  return { work, group: info.gid }
 }
 
 /** In-process boundary for the trusted local owner workflow. Handles expire on discard or restart. */
@@ -193,18 +215,27 @@ export function createPrivatePdfReview(
       if (!mapping || !options?.vaultRoot || options.workRoot === undefined) throw new InvalidPdfReviewError()
       const vault = await privateVaultRoot(options.vaultRoot, scratchRoot)
       if (dirname(mapping.directory) !== vault) throw new InvalidPdfReviewError()
-      const work = await workDirectory(options.workRoot, vault, scratchRoot)
+      const { work, group } = await workDirectory(options.workRoot, vault, scratchRoot)
       const pdf = await readApprovedCandidate(review, approval)
       const destination = join(work, review.candidateSha256 + '.pdf')
       const staging = await mkdtemp(join(work, '.export-'))
       try {
         const temporary = join(staging, 'candidate.pdf')
-        await writeFile(temporary, pdf, { flag: 'wx', mode: 0o640 })
+        const staged = await open(temporary, 'wx', 0o600)
+        try {
+          await staged.writeFile(pdf)
+          await staged.chmod(0o640)
+          const info = await staged.stat()
+          if (info.gid !== group || (info.mode & 0o777) !== 0o640) throw new InvalidPdfReviewError()
+        } finally {
+          await staged.close()
+        }
         // Publish only complete bytes, without replacing an existing export.
         await link(temporary, destination)
         return destination
       } finally {
-        await rm(staging, { recursive: true, force: true })
+        // Cleanup must not change whether the link published successfully.
+        await rm(staging, { recursive: true, force: true }).catch(() => {})
       }
     },
 

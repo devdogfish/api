@@ -1,7 +1,7 @@
 /** Synthetic only. Run with staged Python dependencies and network disabled. */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -131,6 +131,7 @@ const values = {
 try {
   const started = performance.now()
   await Promise.all([scratch, vault, work].map(path => mkdir(path, { mode: 0o700 })))
+  await chmod(work, 0o2750)
   const source = join(root, 'fictional.pdf')
   const generated = await run('-c', fixture, source, iban, tax)
   assert.equal(generated.status, 0, generated.stderr)
@@ -142,11 +143,24 @@ try {
   }
   const job = { ...settings, pdf: await readFile(source) }
   const workAlias = join(root, 'work-alias')
+  const writableParent = join(root, 'writable-parent')
+  const nestedWork = join(writableParent, 'work')
   await symlink(vault, workAlias)
-  for (const workRoot of [root, scratch, workAlias]) {
+  await mkdir(writableParent)
+  await mkdir(nestedWork)
+  await chmod(writableParent, 0o775)
+  await chmod(nestedWork, 0o2750)
+  for (const workRoot of [root, scratch, workAlias, nestedWork]) {
     const aliased = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault, workRoot })
     await assert.rejects(aliased.prepare(job), InvalidPdfReviewError)
   }
+  await chmod(work, 0o2740)
+  await assert.rejects(reviewer.prepare(job), InvalidPdfReviewError)
+  if (process.platform === 'linux') {
+    await chmod(work, 0o750)
+    await assert.rejects(reviewer.prepare(job), InvalidPdfReviewError)
+  }
+  await chmod(work, 0o2750)
   assert.deepEqual(await readdir(vault), [])
   assert.deepEqual(await readdir(scratch), [])
   const control = join(root, 'pixel-control')
@@ -219,9 +233,14 @@ try {
     await rm(work)
     await rename(originalWork, work)
   }
+  const previousUmask = process.umask(0o077)
   const workPdf = await reviewer.exportApprovedCandidate(second, cleared)
+    .finally(() => { process.umask(previousUmask) })
   const filename = second.candidateSha256 + '.pdf'
   assert.equal(workPdf, join(await realpath(work), filename))
+  const [pdfInfo, workInfo] = await Promise.all([stat(workPdf), stat(work)])
+  assert.equal(pdfInfo.mode & 0o777, 0o640)
+  assert.equal(pdfInfo.gid, workInfo.gid)
   const candidate = await readFile(workPdf)
   assert.equal(sha256(candidate), second.candidateSha256)
   await assert.rejects(reviewer.readApprovedCandidate(second, cleared), InvalidPdfReviewError)

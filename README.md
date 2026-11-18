@@ -99,14 +99,16 @@ find its mapping at `<vaultRoot>/<candidateSha256>/mapping.json`. Prepare again
 and obtain fresh approval when revising a draft.
 
 For a local Work handoff, configure `{ vaultRoot, workRoot }` and call
-`exportApprovedCandidate` with the inspection's approval. Work must be an
-existing directory owned by the caller, with no group or other write access.
-The caller rejects overlap with scratch or Vault, including symlink aliases,
-before preparing and exporting. The handoff consumes one approval and publishes
-only the complete digest-named PDF. An existing export stays intact. The reverse
-map stays in Vault. If publication fails after approval is consumed, the map
-remains private. Work mount support for atomic file linking and reader access
-are deployment requirements.
+`exportApprovedCandidate` with the inspection's approval. Use an existing
+Work directory owned by the caller with the intended reader group and mode
+`2750` on Linux or `0750` on macOS. Resolved Work, scratch and Vault paths must have trusted ancestry
+owned by root or the caller. Group or other writable ancestors must be sticky.
+The caller rejects overlap, including symlink aliases, before preparing and
+exporting. The handoff consumes one approval and links the complete
+digest-named PDF at mode `0640`, leaving any existing export intact. The reverse
+map stays private in Vault even if publication fails. Use separate Work and Vault
+mounts without ACLs that grant additional access. Work must support atomic
+file linking and group access.
 
 ```sh
 bun scripts/prove-private-pdf-review.ts "$proof_python"
@@ -115,11 +117,10 @@ bun scripts/prove-vault-placeholders.ts "$proof_python"
 
 The disposable permission proof uses separate Work and Vault tmpfs mounts,
 a Work reader in its own group, and a separate mapping owner. With Work owned
-by the caller and setgid to the reader group at mode `2750`, caller umask
-`0027` permits that reader to read the exact approved PDF. The reader cannot
-write to the PDF or read the private mapping. Umask `0077` masks the Work
-PDF's group-read bit, so the reader receives permission denied. The mapping
-stays accessible to its owner in both cases.
+by the caller and setgid to the reader group at mode `2750`, the reader can
+read the exact approved PDF under both caller umasks `0027` and `0077`. The
+reader cannot write to the PDF or read the private mapping. The mapping stays
+accessible to its owner in both cases.
 
 Run with the staged aggregate proof image and the source checkout mounted read-only.
 

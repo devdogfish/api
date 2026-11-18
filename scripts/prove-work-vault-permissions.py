@@ -65,7 +65,7 @@ def probe(path, user, group, action="read"):
     )
 
 
-def exercise(umask, reader_can_read):
+def exercise(umask):
     started = monotonic()
     with (
         TemporaryDirectory(prefix="work-", dir=WORK) as work_dir,
@@ -104,17 +104,14 @@ def exercise(umask, reader_can_read):
         assert list(vault.iterdir()) == [mapping.parent]
         assert list(mapping.parent.iterdir()) == [mapping]
         assert pdf_path.stat().st_gid == WORK_GROUP
-        assert stat.S_IMODE(pdf_path.stat().st_mode) == (0o640 & ~umask)
+        assert stat.S_IMODE(pdf_path.stat().st_mode) == 0o640
         assert stat.S_IMODE(mapping.stat().st_mode) == 0o600
 
         read = probe(pdf_path, READER, WORK_GROUP)
-        if reader_can_read:
-            assert read.returncode == 0, read.stderr
-            assert hashlib.sha256(read.stdout).hexdigest() == digest
-            with pymupdf.open(stream=read.stdout, filetype="pdf") as exported:
-                assert all(IDENTIFIER not in page.get_text() for page in exported)
-        else:
-            assert read.returncode == 77
+        assert read.returncode == 0, read.stderr
+        assert hashlib.sha256(read.stdout).hexdigest() == digest
+        with pymupdf.open(stream=read.stdout, filetype="pdf") as exported:
+            assert all(IDENTIFIER not in page.get_text() for page in exported)
         assert probe(pdf_path, READER, WORK_GROUP, "append").returncode == 77
         assert probe(pdf_path, OUTSIDER, OUTSIDER).returncode == 77
         assert probe(vault, READER, WORK_GROUP, "list").returncode == 77
@@ -128,7 +125,7 @@ def exercise(umask, reader_can_read):
         }
 
     print(json.dumps({
-        "umask": f"{umask:04o}", "readerCanReadApprovedPdf": reader_can_read,
+        "umask": f"{umask:04o}", "readerCanReadApprovedPdf": True,
         "readerCanReadMapping": False, "elapsedMs": round((monotonic() - started) * 1000),
     }))
 
@@ -144,5 +141,5 @@ if __name__ == "__main__":
                for _, name in socket.if_nameindex())
     assert len(Path("/proc/net/route").read_text().splitlines()) == 1
     assert {str(WORK), str(VAULT)} <= tmpfs and WORK.stat().st_dev != VAULT.stat().st_dev
-    exercise(0o027, reader_can_read=True)
-    exercise(0o077, reader_can_read=False)
+    exercise(0o027)
+    exercise(0o077)
