@@ -96,8 +96,17 @@ The worker writes the private reverse mapping directly to Vault. The review
 checks the mapping digest with the PDF and preview digests. Discard removes an
 unhanded draft's mapping. After reading the approved candidate, the owner can
 find its mapping at `<vaultRoot>/<candidateSha256>/mapping.json`. Prepare again
-and obtain fresh approval when revising a draft. Work integration and its
-filesystem isolation are deployment requirements.
+and obtain fresh approval when revising a draft.
+
+For a local Work handoff, configure `{ vaultRoot, workRoot }` and call
+`exportApprovedCandidate` with the inspection's approval. Work must be an
+existing directory owned by the caller, with no group or other write access.
+The caller rejects overlap with scratch or Vault, including symlink aliases,
+before preparing and exporting. The handoff consumes one approval and publishes
+only the complete digest-named PDF. An existing export stays intact. The reverse
+map stays in Vault. If publication fails after approval is consumed, the map
+remains private. Work mount support for atomic file linking and reader access
+are deployment requirements.
 
 ```sh
 bun scripts/prove-private-pdf-review.ts "$proof_python"

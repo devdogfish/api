@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { mkdir, mkdtemp, open, realpath, rename, rm, stat } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, open, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { ComputeAdmission } from '../computeAdmission'
 import { createPdfReviewPreparer, type ExactMatchPdf } from './exactMatchPdf'
@@ -67,9 +67,19 @@ async function privateVaultRoot(path: string, scratchRoot: string) {
   return vault
 }
 
+async function workDirectory(path: string, vault: string, scratchRoot: string) {
+  const [work, scratch] = await Promise.all([realpath(path), realpath(scratchRoot)])
+  const info = await stat(work)
+  if (!info.isDirectory() || (info.mode & 0o022) !== 0 || info.uid !== process.getuid?.() ||
+      [vault, scratch].some(privateRoot => contains(work, privateRoot) || contains(privateRoot, work))) {
+    throw new InvalidPdfReviewError()
+  }
+  return work
+}
+
 /** In-process boundary for the trusted local owner workflow. Handles expire on discard or restart. */
 export function createPrivatePdfReview(
-  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot?: string; paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[] }
+  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot?: string; workRoot?: string; paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[] }
 ) {
   const phoneRegions = options?.phoneRegions?.slice()
   const prepare = createPdfReviewPreparer(admission, scratchRoot, python, { ...options, phoneRegions })
@@ -94,6 +104,19 @@ export function createPrivatePdfReview(
     if (mapping) await checkArtifact(join(mapping.directory, 'mapping.json'), mapping.digest, maxMappingBytes)
   }
 
+  async function readApprovedCandidate(review: Review, approval: Approval) {
+    const record = active(review)
+    if (!record.approval || record.approval !== approval) throw new InvalidPdfReviewError()
+    // Consume synchronously so concurrent reads cannot reuse the approval.
+    delete record.approval
+    await checkPreview(review, record.candidate)
+    const pdf = await checkCandidate(review, record.candidate, true)
+    await checkMapping(record.mapping)
+    active(review)
+    if (record.mapping) record.mapping.retained = true
+    return pdf
+  }
+
   return {
     async prepare(job: ExactMatchPdf, signal?: AbortSignal): Promise<Review> {
       let draft: string | undefined
@@ -103,6 +126,10 @@ export function createPrivatePdfReview(
         signal?.throwIfAborted()
         const vault = options?.vaultRoot !== undefined && await privateVaultRoot(options.vaultRoot, scratchRoot)
         if ((options?.personNames || phoneRegions !== undefined) && !vault) throw new InvalidPdfReviewError()
+        if (options?.workRoot !== undefined) {
+          if (!vault) throw new InvalidPdfReviewError()
+          await workDirectory(options.workRoot, vault, scratchRoot)
+        }
         if (phoneRegions && (phoneRegions.length > 3 || new Set(phoneRegions).size !== phoneRegions.length ||
             phoneRegions.some(region => !/^[A-Z]{2}$/.test(region)))) {
           throw new InvalidPdfReviewError()
@@ -159,17 +186,26 @@ export function createPrivatePdfReview(
       return approval
     },
 
-    async readApprovedCandidate(review: Review, approval: Approval) {
-      const record = active(review)
-      if (!record.approval || record.approval !== approval) throw new InvalidPdfReviewError()
-      // Consume synchronously so concurrent reads cannot reuse the approval.
-      delete record.approval
-      await checkPreview(review, record.candidate)
-      const pdf = await checkCandidate(review, record.candidate, true)
-      await checkMapping(record.mapping)
-      active(review)
-      if (record.mapping) record.mapping.retained = true
-      return pdf
+    readApprovedCandidate,
+
+    async exportApprovedCandidate(review: Review, approval: Approval) {
+      const { mapping } = active(review)
+      if (!mapping || !options?.vaultRoot || options.workRoot === undefined) throw new InvalidPdfReviewError()
+      const vault = await privateVaultRoot(options.vaultRoot, scratchRoot)
+      if (dirname(mapping.directory) !== vault) throw new InvalidPdfReviewError()
+      const work = await workDirectory(options.workRoot, vault, scratchRoot)
+      const pdf = await readApprovedCandidate(review, approval)
+      const destination = join(work, review.candidateSha256 + '.pdf')
+      const staging = await mkdtemp(join(work, '.export-'))
+      try {
+        const temporary = join(staging, 'candidate.pdf')
+        await writeFile(temporary, pdf, { flag: 'wx', mode: 0o640 })
+        // Publish only complete bytes, without replacing an existing export.
+        await link(temporary, destination)
+        return destination
+      } finally {
+        await rm(staging, { recursive: true, force: true })
+      }
     },
 
     async discard(review: Review) {

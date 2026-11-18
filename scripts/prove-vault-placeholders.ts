@@ -1,7 +1,7 @@
 /** Synthetic only. Run with staged Python dependencies and network disabled. */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,7 @@ const scratch = join(root, 'private-review')
 const vault = join(root, 'vault')
 const work = join(root, 'work')
 const admission = new ComputeAdmission()
-const reviewer = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault })
+const reviewer = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault, workRoot: work })
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const ibanBody = '000000001111222233'
 const iban = 'DE' + String(98n - BigInt(ibanBody + '131400') % 97n).padStart(2, '0') + ibanBody
@@ -141,6 +141,14 @@ try {
     safeTextByPage: Array.from({ length: 2 }, () => ['PUBLIC REFERENCE', 'END OF SAMPLE'])
   }
   const job = { ...settings, pdf: await readFile(source) }
+  const workAlias = join(root, 'work-alias')
+  await symlink(vault, workAlias)
+  for (const workRoot of [root, scratch, workAlias]) {
+    const aliased = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault, workRoot })
+    await assert.rejects(aliased.prepare(job), InvalidPdfReviewError)
+  }
+  assert.deepEqual(await readdir(vault), [])
+  assert.deepEqual(await readdir(scratch), [])
   const control = join(root, 'pixel-control')
   const controlVault = join(vault, 'pixel-control')
   await Promise.all([mkdir(control, { mode: 0o700 }), mkdir(controlVault, { mode: 0o700 })])
@@ -194,21 +202,37 @@ try {
   await writeFile(mapping, original.toString().replace('ORCHID VECTOR', 'FICTIONAL SUBSTITUTE'))
   await assert.rejects(reviewer.inspect(second), InvalidPdfReviewError)
   await assert.rejects(reviewer.approve(second, inspected), InvalidPdfReviewError)
-  await assert.rejects(reviewer.readApprovedCandidate(second, approval), InvalidPdfReviewError)
+  await assert.rejects(reviewer.exportApprovedCandidate(second, approval), InvalidPdfReviewError)
   await writeFile(mapping, original)
-  await assert.rejects(reviewer.readApprovedCandidate(second, approval), InvalidPdfReviewError)
+  await assert.rejects(reviewer.exportApprovedCandidate(second, approval), InvalidPdfReviewError)
   console.log('PASS replacement draft required fresh approval; substituted Vault mapping blocked review and handoff')
 
+  assert.deepEqual(await readdir(work), [])
   const cleared = await reviewer.approve(second, inspected)
-  const candidate = await reviewer.readApprovedCandidate(second, cleared)
+  const originalWork = join(root, 'work-original')
+  await rename(work, originalWork)
+  await symlink(vault, work)
+  try {
+    await assert.rejects(reviewer.exportApprovedCandidate(second, cleared), InvalidPdfReviewError)
+    assert.deepEqual(await readdir(vault), [second.candidateSha256])
+  } finally {
+    await rm(work)
+    await rename(originalWork, work)
+  }
+  const workPdf = await reviewer.exportApprovedCandidate(second, cleared)
+  const filename = second.candidateSha256 + '.pdf'
+  assert.equal(workPdf, join(await realpath(work), filename))
+  const candidate = await readFile(workPdf)
   assert.equal(sha256(candidate), second.candidateSha256)
-  const workPdf = join(work, 'candidate.pdf')
-  await writeFile(workPdf, candidate, { flag: 'wx', mode: 0o600 })
+  await assert.rejects(reviewer.readApprovedCandidate(second, cleared), InvalidPdfReviewError)
+  const duplicate = await reviewer.approve(second, inspected)
+  await assert.rejects(reviewer.exportApprovedCandidate(second, duplicate), { code: 'EEXIST' })
+  assert.deepEqual(await readFile(workPdf), candidate)
   const checked = await run('-c', checkWork, worker, workPdf)
   assert.equal(checked.status, 0, checked.stderr)
   await reviewer.discard(second)
   assert.deepEqual(await readdir(scratch), [])
-  assert.deepEqual(await readdir(work), ['candidate.pdf'])
+  assert.deepEqual(await readdir(work), [filename])
   assert.deepEqual(await readdir(vault), [second.candidateSha256])
   assert.deepEqual(await readFile(mapping), original)
 
@@ -219,7 +243,7 @@ try {
   await assert.rejects(reviewer.prepare(conflict), UnverifiedRedactionError)
   assert.deepEqual(await readdir(scratch), [])
   assert.deepEqual(await readdir(vault), [second.candidateSha256])
-  console.log(`PASS stable repeated/wrapped labels across text and scan, candidate-only Work and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
+  console.log(`PASS stable repeated/wrapped labels across text and scan, approved local Work handoff and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
 } finally {
   await rm(root, { recursive: true, force: true })
 }
