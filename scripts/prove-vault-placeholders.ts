@@ -1,7 +1,7 @@
 /** Synthetic only. Run with staged Python dependencies and network disabled. */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +16,7 @@ const root = await mkdtemp(join(tmpdir(), 'girke-vault-fixture-'))
 const scratch = join(root, 'private-review')
 const vault = join(root, 'vault')
 const work = join(root, 'work')
+const workMode = process.platform === 'darwin' ? 0o750 : 0o2750
 const admission = new ComputeAdmission()
 const reviewer = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault, workRoot: work })
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -54,24 +55,28 @@ with pdf.open() as output, pdf.open() as typeset:
 `
 
 const checkWork = `
-import re
+import json
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]).parent))
 from exact_match_pdf import check_identifiers, ocr, ocr_text, pdf, tokens
+from placeholder_pixels import apply_patches
 
+plan = json.loads(Path(sys.argv[3]).read_text())
+expected = {"[PERSON_1]", "[PERSON_2]", "[EMAIL_1]", "[IBAN_1]", "[TAX_ID_1]"}
 with pdf.open(sys.argv[2]) as candidate:
     assert len(candidate) == 2
-    for page in candidate:
+    for page, placements in zip(candidate, plan["placements"], strict=True):
         assert not page.get_text().strip()
         assert not page.get_links() and not list(page.annots())
         assert not candidate.metadata["author"]
         image, = page.get_images()
-        seen = ocr_text(ocr(pdf.Pixmap(candidate, image[0]), "eng", 11))
+        pixels = pdf.Pixmap(candidate, image[0])
+        assert apply_patches(pixels, placements, verify=True) == expected
+        assert sum(label == "[PERSON_1]" for _, label in placements) == (2 if page.number == 0 else 1)
+        seen = ocr_text(ocr(pixels, "eng", 11))
         check_identifiers(seen, [tokens("ORCHID VECTOR"), tokens("AMBER FIGMENT")], True, "source leaked")
-        for label in ("PERSON_1", "PERSON_2", "EMAIL_1", "IBAN_1", "TAX_ID_1"):
-            assert re.search(label.replace("_", "[ _]"), seen), seen
-        assert len(re.findall("PERSON[ _]1", seen)) == (2 if page.number == 0 else 1), seen
+        assert "PUBLIC REFERENCE" in seen and "END OF SAMPLE" in seen, seen
 `
 
 const injectSourcePixel = `
@@ -123,6 +128,13 @@ async function run(...args: string[]) {
   return { status, stderr }
 }
 
+async function setDirectoryMode(path: string, mode: number) {
+  // Bun's Linux chmod drops the setgid bit in this fixture.
+  const result = await run('-c', 'import os, sys; os.chmod(sys.argv[1], int(sys.argv[2], 8))', path, mode.toString(8))
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal((await stat(path)).mode & 0o7777, mode)
+}
+
 const values = {
   '[PERSON_1]': 'ORCHID VECTOR', '[PERSON_2]': 'AMBER FIGMENT',
   '[IBAN_1]': iban, '[EMAIL_1]': 'sample@example.invalid', '[TAX_ID_1]': tax
@@ -131,7 +143,7 @@ const values = {
 try {
   const started = performance.now()
   await Promise.all([scratch, vault, work].map(path => mkdir(path, { mode: 0o700 })))
-  await chmod(work, 0o2750)
+  await setDirectoryMode(work, workMode)
   const source = join(root, 'fictional.pdf')
   const generated = await run('-c', fixture, source, iban, tax)
   assert.equal(generated.status, 0, generated.stderr)
@@ -148,19 +160,19 @@ try {
   await symlink(vault, workAlias)
   await mkdir(writableParent)
   await mkdir(nestedWork)
-  await chmod(writableParent, 0o775)
-  await chmod(nestedWork, 0o2750)
+  await setDirectoryMode(writableParent, 0o775)
+  await setDirectoryMode(nestedWork, workMode)
   for (const workRoot of [root, scratch, workAlias, nestedWork]) {
     const aliased = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault, workRoot })
     await assert.rejects(aliased.prepare(job), InvalidPdfReviewError)
   }
-  await chmod(work, 0o2740)
+  await setDirectoryMode(work, workMode & ~0o010)
   await assert.rejects(reviewer.prepare(job), InvalidPdfReviewError)
   if (process.platform === 'linux') {
-    await chmod(work, 0o750)
+    await setDirectoryMode(work, 0o750)
     await assert.rejects(reviewer.prepare(job), InvalidPdfReviewError)
   }
-  await chmod(work, 0o2750)
+  await setDirectoryMode(work, workMode)
   assert.deepEqual(await readdir(vault), [])
   assert.deepEqual(await readdir(scratch), [])
   const control = join(root, 'pixel-control')
@@ -247,7 +259,7 @@ try {
   const duplicate = await reviewer.approve(second, inspected)
   await assert.rejects(reviewer.exportApprovedCandidate(second, duplicate), { code: 'EEXIST' })
   assert.deepEqual(await readFile(workPdf), candidate)
-  const checked = await run('-c', checkWork, worker, workPdf)
+  const checked = await run('-c', checkWork, worker, workPdf, join(scratch, attempt, 'review-plan.json'))
   assert.equal(checked.status, 0, checked.stderr)
   await reviewer.discard(second)
   assert.deepEqual(await readdir(scratch), [])
