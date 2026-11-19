@@ -28,12 +28,13 @@ bun run typecheck
 docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d postgres
 docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --build --rm girke-api bun run db:migrate
 docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --build --rm girke-api bun run tokens:create <name>
-docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d --build
 ```
 
-Database migrations are generated in `drizzle/`. Token values are printed once;
-only hashes are stored. Pushing `main` deploys the exact revision to Hostinger
-through GitHub Actions and verifies both API and Quantself public endpoints.
+Database migrations are generated in `drizzle/`. Token values are printed once
+and stored as hashes. Pushing `main` triggers an API and Whisper release to
+Hostinger. The workflow stages the triggering revision separately, uses the
+existing healthy PostgreSQL service, and verifies the API and rollback fence.
+The shared Caddy and Boards services have their own maintenance window.
 
 ## Private redaction proof
 
@@ -231,11 +232,11 @@ the offline Linux memory and CPU budget.
 
 ## Public routing
 
-Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` and
-`dashboard.girke.dev` to Quantself's `quantself-web:3000` over the shared
-external Docker network `girke-edge`. No random public app ports are opened.
-DNS and TLS are live for both domains. Wiki, n8n, and Excalidraw remain on the
-Oracle VPS and are not managed by this repository.
+Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` over the shared
+external Docker network `girke-edge`. The legacy Quantself dashboard on
+`dashboard.girke.dev` is fenced for rollback and returns HTTP 503 at `/` and
+`/api/health`. Quantself dashboard traffic moved to Keep in the
+[home cutover](https://github.com/devdogfish/quantself/issues/209).
 
 ## Endpoint inventory
 

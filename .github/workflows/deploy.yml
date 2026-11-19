@@ -27,6 +27,7 @@ jobs:
       PRODUCTION_REFERENCE_URL: https://api.girke.dev/reference
       PRODUCTION_VERSION_URL: https://api.girke.dev/version
       REPOSITORY_URL: https://github.com/devdogfish/api.git
+      RELEASE_SHA: ${{ github.sha }}
 
     steps:
       - name: Configure SSH
@@ -40,13 +41,14 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' '72.60.27.33 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL5LxaEZRNiTrRJNdNSBJ8bcLa3YVHSGtU7AxYvYMEFo' >> ~/.ssh/known_hosts
 
-      - name: Deploy
+      - name: Deploy API and Whisper
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" "DEPLOY_PATH='$DEPLOY_PATH' REPOSITORY_URL='$REPOSITORY_URL' bash -se" <<'REMOTE'
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" "DEPLOY_PATH='$DEPLOY_PATH' REPOSITORY_URL='$REPOSITORY_URL' RELEASE_SHA='$RELEASE_SHA' bash -se" <<'REMOTE'
           set -euo pipefail
           cd "$DEPLOY_PATH"
           gh auth setup-git -h github.com
@@ -56,20 +58,42 @@ jobs:
           git config --local --unset-all url.ssh://git@github.com/.insteadOf || true
           git remote set-url origin "$REPOSITORY_URL"
           git fetch --prune origin main
-          git checkout -B main FETCH_HEAD
-          git reset --hard FETCH_HEAD
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml config --quiet
-          docker run --rm --network none \
-            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            caddy:2-alpine \
-            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml build girke-api whisper
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d postgres
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --rm --no-deps -T girke-api bun run db:migrate < /dev/null
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d --no-deps --force-recreate whisper
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d --no-deps --force-recreate girke-api
-          docker compose -f docker-compose.yml -f docker-compose.hostinger.yml up -d --force-recreate boards caddy
-          docker image prune -f
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$RELEASE_SHA" ]]; then
+            echo 'Main changed after this deployment was queued.' >&2
+            exit 1
+          fi
+
+          project_label='{{ index .Config.Labels "com.docker.compose.project" }}'
+          project=$(docker inspect --format "$project_label" girke-api)
+          if [[ ! "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo 'Girke API has no valid existing Compose project.' >&2
+            exit 1
+          fi
+          for container in girke-api-whisper girke-api-postgres; do
+            if [[ "$(docker inspect --format "$project_label" "$container")" != "$project" ]]; then
+              echo "Unexpected Compose project for $container." >&2
+              exit 1
+            fi
+          done
+          if [[ "$(docker inspect --format '{{.State.Health.Status}}' girke-api-postgres)" != healthy ]]; then
+            echo 'Girke PostgreSQL must already be healthy.' >&2
+            exit 1
+          fi
+
+          # The live shared Caddyfile is bind-mounted from DEPLOY_PATH.
+          # Stage the API release separately so its rollback fence stays in place.
+          release_dir=$(mktemp -d)
+          trap 'rm -r -- "$release_dir"' EXIT
+          git archive "$RELEASE_SHA" | tar -xf - -C "$release_dir"
+          ln -s "$DEPLOY_PATH/.env" "$release_dir/.env"
+          cd "$release_dir"
+          compose=(docker compose --project-name "$project" -f docker-compose.yml -f docker-compose.hostinger.yml)
+          "${compose[@]}" config --quiet
+          "${compose[@]}" build girke-api whisper
+          "${compose[@]}" run --rm --no-deps -T girke-api bun run db:migrate < /dev/null
+          "${compose[@]}" up -d --no-deps --force-recreate whisper
+          "${compose[@]}" up -d --no-deps --force-recreate girke-api
+          printf 'deployed_commit=%s\n' "$RELEASE_SHA"
           REMOTE
 
       - name: Verify production
@@ -79,5 +103,12 @@ jobs:
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_VERSION_URL" >/dev/null
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_OPENAPI_URL" | grep '"openapi":"3.1.0"'
           curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_REFERENCE_URL" | grep '/openapi.json'
-          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_DASHBOARD_URL" >/dev/null
-          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "${PRODUCTION_DASHBOARD_URL%/}/api/health" >/dev/null
+          fence_body=$(mktemp)
+          trap 'rm "$fence_body"' EXIT
+          for path in / /api/health; do
+            status=$(curl --silent --show-error --max-time 10 --output "$fence_body" --write-out '%{http_code}' "${PRODUCTION_DASHBOARD_URL%/}$path")
+            if [[ "$status" != 503 ]] || [[ "$(cat "$fence_body")" != 'Quantself migration in progress. Try again shortly.' ]]; then
+              printf 'Expected the legacy dashboard rollback fence at %s, got HTTP %s.\n' "$path" "$status" >&2
+              exit 1
+            fi
+          done
