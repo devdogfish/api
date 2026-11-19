@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -37,7 +37,7 @@ const admission = new ObservedAdmission()
 const whisperStarted = Promise.withResolvers<void>()
 const releaseWhisper = Promise.withResolvers<void>()
 const prepared = Promise.withResolvers<string>()
-const refused = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+const refused = Array.from({ length: 3 }, () => Promise.withResolvers<void>())
 let refusalCount = 0
 const input = new PassThrough()
 const pending: Promise<unknown>[] = []
@@ -115,18 +115,26 @@ with pymupdf.open() as doc, pymupdf.open() as output:
   assert.deepEqual(await readdir(work), [])
   releaseWhisper.resolve()
   const approval = await Promise.race([prepared.promise, consoleRun.then(() => { throw new Error('console exited early') })])
-  const [, candidateHash, previewHash] = approval.split(' ')
+  const [, candidateHash, previewHash, nonce] = approval.split(' ')
   const previewBytes = await readFile(preview)
   assert.equal(digest(previewBytes), previewHash)
   assert.equal((await stat(preview)).mode & 0o777, 0o600)
   assert.deepEqual(await readdir(work), [])
-  input.write(`approve ${candidateHash} ${'0'.repeat(64)}\n`)
+  input.write(`approve ${candidateHash} ${'0'.repeat(64)} ${nonce}\n`)
   await refused[0]!.promise
   await writeFile(preview, 'substituted preview')
   input.write(approval + '\n')
   await refused[1]!.promise
   assert.deepEqual(await readdir(work), [])
   await writeFile(preview, previewBytes)
+  const moved = join(root, 'byte-identical-preview.pdf')
+  await rename(preview, moved)
+  await symlink(moved, preview)
+  input.write(approval + '\n')
+  await refused[2]!.promise
+  assert.deepEqual(await readdir(work), [])
+  await unlink(preview)
+  await rename(moved, preview)
   input.write(approval + '\n' + approval + '\n')
   const destination = await consoleRun
   assert.equal(destination, join(await realpath(work), candidateHash + '.pdf'))
@@ -139,7 +147,7 @@ with pymupdf.open() as doc, pymupdf.open() as output:
   assert.equal((await whisper).status, 200)
   assert.equal((await ocr).status, 200)
   assert.deepEqual(admission.started, [0, 1, 2])
-  console.log('owner_console=pass shared_order=whisper,owner_pdf,ocr pages=2 stale_and_tampered_refused=1 synthetic_export=1')
+  console.log('owner_console=pass shared_order=whisper,owner_pdf,ocr pages=2 stale_tampered_linked_preview_refused=1 synthetic_export=1')
 } finally {
   clearTimeout(timer)
   input.end()

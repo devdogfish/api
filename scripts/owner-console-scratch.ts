@@ -1,6 +1,6 @@
 import { dlopen, FFIType } from 'bun:ffi'
 import { constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, realpath, rm, rmdir, unlink } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, realpath, rmdir, unlink } from 'node:fs/promises'
 import { dirname, join, relative, sep, isAbsolute } from 'node:path'
 
 const c = dlopen(process.platform === 'darwin' ? 'libSystem.B.dylib' : 'libc.so.6', {
@@ -37,24 +37,42 @@ async function privateRoot(path: string) {
   }
   const info = await maybeStat(path)
   requireSafe(info && info.isDirectory() && info.uid === BigInt(owner) && (info.mode & 0o777n) === 0o700n)
-  return info.dev
+  return info
 }
 
-async function inspectTree(path: string, device: bigint): Promise<void> {
+async function privateDirectory(path: string, device: bigint) {
   const info = await maybeStat(path)
-  requireSafe(info && info.dev === device && info.uid === BigInt(owner) && !(info.mode & 0o077n))
-  if (info.isDirectory()) {
-    for (const name of await readdir(path)) await inspectTree(join(path, name), device)
-  } else {
-    requireSafe(info.isFile() && info.nlink === 1n)
-  }
+  requireSafe(info && info.isDirectory() && info.dev === device &&
+    info.uid === BigInt(owner) && (info.mode & 0o777n) === 0o700n)
+  return info
 }
 
-async function inspectSlot(path: string, device: bigint) {
-  await inspectTree(path, device)
-  for (const name of await readdir(path)) {
-    requireSafe(['prepared.json', 'retain', 'preview.pdf'].includes(name) || /^redaction-[a-zA-Z0-9]{6}$/.test(name))
+const workerFiles = new Set([
+  'candidate.pdf', 'dictionary.json', 'rasters.json', 'review-plan.json', 'review.pdf', 'source.pdf'
+])
+
+async function inspectSlot(slot: string, device: bigint) {
+  await privateDirectory(slot, device)
+  const files: string[] = []
+  const attempts: string[] = []
+  for (const name of await readdir(slot)) {
+    const path = join(slot, name)
+    if (['prepared.json', 'retain', 'preview.pdf'].includes(name)) {
+      await privateFile(path, device)
+      files.push(path)
+      continue
+    }
+    requireSafe(/^redaction-[a-zA-Z0-9]{6}$/.test(name) && attempts.length === 0)
+    await privateDirectory(path, device)
+    attempts.push(path)
+    for (const child of await readdir(path)) {
+      requireSafe(workerFiles.has(child))
+      const file = join(path, child)
+      await privateFile(file, device)
+      files.push(file)
+    }
   }
+  return { files, attempts }
 }
 
 async function privateFile(path: string, device: bigint) {
@@ -86,8 +104,8 @@ export async function withOwnerConsoleScratch<T>(
   requireSafe(!isWithin(scratchRoot, vaultRoot) && !isWithin(vaultRoot, scratchRoot))
   const work = await realpath(workRoot)
   requireSafe([scratchRoot, vaultRoot].every(root => !isWithin(root, work) && !isWithin(work, root)))
-  const scratchDevice = await privateRoot(scratchRoot)
-  const vaultDevice = await privateRoot(vaultRoot)
+  const { dev: scratchDevice } = await privateRoot(scratchRoot)
+  const { dev: vaultDevice, ino: vaultInode } = await privateRoot(vaultRoot)
   const lockPath = join(scratchRoot, '.owner-console.lock')
   const lock = await open(lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600)
   try {
@@ -97,58 +115,67 @@ export async function withOwnerConsoleScratch<T>(
     const slot = join(scratchRoot, 'owner-console-session')
     const journal = join(slot, 'prepared.json')
     const retained = join(slot, 'retain')
-    const oldSlot = await maybeStat(slot)
-    if (oldSlot) {
-      // An absent or incomplete journal can mean a worker outlived the console.
-      // Keep that session intact for reconciliation after worker exit is proven.
-      requireSafe(oldSlot.isDirectory())
-      await inspectSlot(slot, scratchDevice)
+    async function reconcile(allowEmpty: boolean) {
+      const { files, attempts } = await inspectSlot(slot, scratchDevice)
+      if (allowEmpty && files.length === 0 && attempts.length === 0) {
+        await rmdir(slot)
+        return
+      }
+      // Without a completed journal a worker may have outlived its console.
       const metadata = await privateFile(journal, scratchDevice)
-      requireSafe(metadata.size <= 256n && metadata.size > 0n)
+      requireSafe(metadata.size <= 512n && metadata.size > 0n)
       const file = await open(journal, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-      let record: { digest: string; ino: string; fileIno: string; dev: string }
+      let record: { digest: string; ino: string; fileIno: string; dev: string; vaultIno: string }
       try { record = JSON.parse(await file.readFile('utf8')) }
       finally { await file.close() }
+      const vault = await privateRoot(vaultRoot)
       requireSafe(record && typeof record.digest === 'string' && digestName.test(record.digest) &&
-        [record.ino, record.fileIno, record.dev].every(value => typeof value === 'string' && /^[0-9]+$/.test(value)))
-      if (await maybeStat(retained)) {
-        await privateFile(retained, scratchDevice)
-      } else {
+        [record.ino, record.fileIno].every(value => typeof value === 'string' && /^[0-9]+$/.test(value)) &&
+        record.dev === String(vault.dev) && record.vaultIno === String(vault.ino))
+      if (!files.includes(retained)) {
         const mapping = join(vaultRoot, record.digest)
-        const existing = await maybeStat(mapping)
-        if (existing) {
-          requireSafe(existing.isDirectory() && existing.ino.toString() === record.ino &&
-            existing.dev === vaultDevice && existing.dev.toString() === record.dev)
-          await inspectTree(mapping, vaultDevice)
+        if (await maybeStat(mapping)) {
+          const existing = await privateDirectory(mapping, vault.dev)
+          requireSafe(String(existing.ino) === record.ino)
           const members = await readdir(mapping)
           requireSafe(members.length === 0 || (members.length === 1 && members[0] === 'mapping.json'))
           if (members.length) {
             const map = join(mapping, 'mapping.json')
-            requireSafe((await privateFile(map, vaultDevice)).ino.toString() === record.fileIno)
+            requireSafe(String((await privateFile(map, vault.dev)).ino) === record.fileIno)
             await unlink(map)
           }
           await rmdir(mapping)
         }
       }
-      await rm(slot, { recursive: true })
+      // Keep the journal until the other artifacts have been removed.
+      for (const path of files) {
+        if (path !== journal && path !== retained) await unlink(path)
+      }
+      for (const path of attempts) await rmdir(path)
+      // Once retention is set, removing this marker before the journal would
+      // let a crash during cleanup make a later restart delete the exported map.
+      await unlink(journal)
+      if (files.includes(retained)) await unlink(retained)
+      await rmdir(slot)
     }
 
+    if (await maybeStat(slot)) await reconcile(false)
     await mkdir(slot, { mode: 0o700 })
     const result = await run(slot, {
       async prepared(digest) {
         requireSafe(digestName.test(digest))
+        const vault = await privateRoot(vaultRoot)
+        requireSafe(vault.dev === vaultDevice && vault.ino === vaultInode)
         const mapping = join(vaultRoot, digest)
-        const dir = await maybeStat(mapping)
-        requireSafe(dir && dir.isDirectory() && dir.dev === vaultDevice)
-        await inspectTree(mapping, vaultDevice)
-        const map = await privateFile(join(mapping, 'mapping.json'), vaultDevice)
-        await writeMarker(journal, JSON.stringify({ digest, ino: String(dir.ino), fileIno: String(map.ino), dev: String(dir.dev) }))
+        const dir = await privateDirectory(mapping, vault.dev)
+        const map = await privateFile(join(mapping, 'mapping.json'), vault.dev)
+        await writeMarker(journal, JSON.stringify({
+          digest, ino: String(dir.ino), fileIno: String(map.ino), dev: String(vault.dev), vaultIno: String(vault.ino)
+        }))
       },
-      // Mark retention before calling anything that can publish to Work.
       async retain() { await writeMarker(retained, 'retain\n') }
     })
-    await inspectSlot(slot, scratchDevice)
-    await rm(slot, { recursive: true })
+    await reconcile(true)
     return result
   } finally {
     await lock.close()

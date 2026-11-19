@@ -87,7 +87,7 @@ def expect_refusal(child):
             child.kill()
 
 
-def transferred(new_root):
+def prepare_fixture(new_root):
     # Assign the dedicated tmpfs mount roots to the test identities.
     scratch, vault, work = [new_root / name for name in ("scratch", "vault", "work")]
     for path, group, mode in ((scratch, VAULT_GROUP, 0o700), (vault, VAULT_GROUP, 0o700), (work, WORK_GROUP, 0o2750)):
@@ -123,13 +123,13 @@ def main():
     assert exporter.strip() == b"11001 12001 [] 0000000000000000"
 
     base = Path("/fixture-identity")
-    scratch, vault, work, source = transferred(base)
+    scratch, vault, work, source = prepare_fixture(base)
     original = digest(source.read_bytes())
     with start(base) as abandoned:
         try:
             request(abandoned, "prepare")
             stale = expect_reply(abandoned, "prepared")
-            _, abandoned_candidate, _ = stale.split()
+            _, abandoned_candidate, _, previous_nonce = stale.split()
             slot = scratch / "owner-console-session"
             abandoned_map = vault / abandoned_candidate / "mapping.json"
             assert abandoned_map.is_file() and not list(work.iterdir())
@@ -154,6 +154,17 @@ def main():
     assert digest(source.read_bytes()) == original
     alias.unlink()
 
+    attempt, = slot.glob("redaction-*")
+    unexpected = attempt / "unrelated.txt"
+    subprocess.run(
+        [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('unrelated')", str(unexpected)],
+        timeout=5, check=True, **controls(OWNER, VAULT_GROUP),
+    )
+    with start(base) as confined:
+        expect_refusal(confined)
+    assert unexpected.read_text() == "unrelated" and abandoned_map.is_file()
+    unexpected.unlink()
+
     parked = vault / "held-mapping.json"
     original_mapping = digest(abandoned_map.read_bytes())
     abandoned_map.rename(parked)
@@ -174,6 +185,10 @@ def main():
     with start(base) as confined:
         expect_refusal(confined)
     assert abandoned_map.is_file()
+    journal.write_text(json.dumps({**record, "vaultIno": str(int(record["vaultIno"]) + 1)}))
+    with start(base) as confined:
+        expect_refusal(confined)
+    assert abandoned_map.is_file()
     journal.write_bytes(recorded)
 
     with start(base) as reconciled:
@@ -191,16 +206,19 @@ def main():
         try:
             request(first, "prepare")
             approval = expect_reply(first, "prepared")
-            _, candidate, preview_hash = approval.split()
+            _, candidate, preview_hash, nonce = approval.split()
             preview = scratch / "owner-console-session/preview.pdf"
             mapping = vault / candidate / "mapping.json"
             pdf = work / (candidate + ".pdf")
             assert not list(work.iterdir())
             assert digest(preview.read_bytes()) == preview_hash
+            request(first, f"approve {candidate} {preview_hash} {previous_nonce}")
+            expect_reply(first, "refused")
+            assert not list(work.iterdir())
             for path in (source, preview, mapping):
                 assert probe(path, READER, WORK_GROUP).returncode == 77
             assert probe(vault, READER, WORK_GROUP, "list").returncode == 77
-            request(first, f"approve {candidate} " + "0" * 64)
+            request(first, f"approve {candidate} {'0' * 64} {nonce}")
             expect_reply(first, "refused")
             assert not list(work.iterdir())
             mapping_sha = digest(mapping.read_bytes())
@@ -256,7 +274,7 @@ def main():
         expect_refusal(uncertain)
     assert orphan_slot.is_dir()
     assert digest(mapping.read_bytes()) == mapping_sha and digest(pdf.read_bytes()) == candidate
-    print("linux_reader=pass separate_work_vault_scratch=1 nonroot_exporter=1 approved_digest=1 reader_append_denied=1 outsider_denied=1 vault_denied=1 retained_after_sigkill=1 abandoned_cleanup=1 active_lock=1 scratch_and_mapping_symlinks_refused=1 traversal_refused=1 incomplete_journal_preserved=1 stale_approval_refused=1", flush=True)
+    print("linux_reader=pass separate_work_vault_scratch=1 nonroot_exporter=1 approved_digest=1 reader_append_denied=1 outsider_denied=1 vault_denied=1 retained_after_sigkill=1 abandoned_cleanup=1 active_lock=1 scratch_and_mapping_symlinks_refused=1 traversal_refused=1 incomplete_journal_preserved=1 vault_identity_bound=1 unrelated_file_preserved=1 stale_approval_refused=1", flush=True)
 
 
 if __name__ == "__main__":

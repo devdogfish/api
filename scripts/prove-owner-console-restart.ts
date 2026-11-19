@@ -90,7 +90,7 @@ with pymupdf.open() as doc:
     console.send('prepare')
     const line = (await console.next('prepared'))!
     const [, candidate, preview] = line.split(' ')
-    assert.match(line, /^approve [a-f0-9]{64} [a-f0-9]{64}$/)
+    assert.match(line, /^approve [a-f0-9]{64} [a-f0-9]{64} [a-f0-9-]{36}$/)
     assert.equal(digest(await readFile(join(scratch, 'owner-console-session', 'preview.pdf'))), preview)
     return { line, candidate }
   }
@@ -117,6 +117,9 @@ with pymupdf.open() as doc:
     await second.next('refused')
     assert.deepEqual(await readdir(graceful.work), [])
     const fresh = await prepare(second, graceful.scratch)
+    second.send(fresh.line.split(' ').slice(0, 3).join(' ') + ' ' + old.line.split(' ')[3])
+    await second.next('refused')
+    assert.deepEqual(await readdir(graceful.work), [])
     second.send(fresh.line)
     await second.next('exported')
     assert.deepEqual(await second.exited, [0, null])
