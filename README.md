@@ -123,12 +123,20 @@ reader cannot write to the PDF or read the private mapping. The mapping stays
 accessible to its owner in both cases.
 
 Run with the staged aggregate proof image and the source checkout mounted read-only.
+Copy the proof into a disposable writable tmpfs for Bun's inline script and
+check that the image's installed dependencies use the checkout's lockfile.
 
 ```sh
 docker run --rm --pull=never --platform linux/amd64 --network none \
-  --mount "type=bind,source=$PWD,target=/fixture,readonly" --workdir /fixture \
+  --mount "type=bind,source=$PWD,target=/source,readonly" --workdir /fixture \
+  --tmpfs /fixture:rw,nosuid,nodev,mode=1777 \
   --tmpfs /fixture-work:rw,nosuid,nodev,mode=0711 --tmpfs /fixture-vault:rw,nosuid,nodev,mode=0711 \
-  --entrypoint python girke-213-aggregate-proof:407c8bb7 scripts/prove-work-vault-permissions.py
+  --entrypoint sh girke-213-aggregate-proof:407c8bb7 -ec '
+    cmp /source/bun.lock /app/bun.lock
+    cp -R /source/src /source/scripts /source/package.json .
+    ln -s /app/node_modules node_modules
+    exec python scripts/prove-work-vault-permissions.py
+  '
 ```
 
 Pass `{ paddleModels }` to the private caller to use local PP-OCRv5 mobile word
