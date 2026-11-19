@@ -63,37 +63,7 @@ jobs:
             exit 1
           fi
 
-          project_label='{{ index .Config.Labels "com.docker.compose.project" }}'
-          project=$(docker inspect --format "$project_label" girke-api)
-          if [[ ! "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
-            echo 'Girke API has no valid existing Compose project.' >&2
-            exit 1
-          fi
-          for container in girke-api-whisper girke-api-postgres; do
-            if [[ "$(docker inspect --format "$project_label" "$container")" != "$project" ]]; then
-              echo "Unexpected Compose project for $container." >&2
-              exit 1
-            fi
-          done
-          if [[ "$(docker inspect --format '{{.State.Health.Status}}' girke-api-postgres)" != healthy ]]; then
-            echo 'Girke PostgreSQL must already be healthy.' >&2
-            exit 1
-          fi
-
-          # The live shared Caddyfile is bind-mounted from DEPLOY_PATH.
-          # Stage the API release separately so its rollback fence stays in place.
-          release_dir=$(mktemp -d)
-          trap 'rm -r -- "$release_dir"' EXIT
-          git archive "$RELEASE_SHA" | tar -xf - -C "$release_dir"
-          ln -s "$DEPLOY_PATH/.env" "$release_dir/.env"
-          cd "$release_dir"
-          compose=(docker compose --project-name "$project" -f docker-compose.yml -f docker-compose.hostinger.yml)
-          "${compose[@]}" config --quiet
-          "${compose[@]}" build girke-api whisper
-          "${compose[@]}" run --rm --no-deps -T girke-api bun run db:migrate < /dev/null
-          "${compose[@]}" up -d --no-deps --force-recreate whisper
-          "${compose[@]}" up -d --no-deps --force-recreate girke-api
-          printf 'deployed_commit=%s\n' "$RELEASE_SHA"
+          git show "$RELEASE_SHA:scripts/deploy-hostinger.sh" | bash -s -- "$DEPLOY_PATH" "$RELEASE_SHA"
           REMOTE
 
       - name: Verify production

@@ -31,9 +31,11 @@ docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --build
 ```
 
 Database migrations are generated in `drizzle/`. Token values are printed once
-and stored as hashes. Pushing `main` triggers an API and Whisper release to
-Hostinger. The workflow stages the triggering revision separately, uses the
-existing healthy PostgreSQL service, and verifies the API and rollback fence.
+and stored as hashes. Pushing `main` triggers an API release to Hostinger.
+The workflow checks disk space before staging the exact revision, reuses the
+existing API runtime, and verifies the API and rollback fence. It checks
+unchanged Whisper files and keeps that service running. Changes to the API
+runtime dependencies or Whisper inputs require a separate runtime release.
 The shared Caddy and Boards services have their own maintenance window.
 
 ## Private redaction proof
