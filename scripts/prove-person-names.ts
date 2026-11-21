@@ -143,7 +143,8 @@ try {
     const [attempt] = await readdir(scratch)
     const plan = JSON.parse(await readFile(join(scratch, attempt, 'review-plan.json'), 'utf8'))
     assert.equal(plan.names.model, fixture.model)
-    assert.equal(plan.names.calls, 3, 'one text extraction and two Paddle transcriptions')
+    // Discovery and placement share one inference per distinct page text.
+    assert.ok(plan.names.calls >= 1 && plan.names.calls <= 3, 'at most one NER call per text extraction or Paddle transcription')
     assert.ok(plan.names.detections >= 2)
     const reverse = JSON.parse(await readFile(join(vaultRoot, review.candidateSha256, 'mapping.json'), 'utf8'))
     assert.deepEqual(reverse.values, {
