@@ -136,7 +136,8 @@ def evaluate_document(worker, spec, root, options, totals):
         os.environ.update({key: scratch for key in scratch_settings})
         try:
             worker.redact(target, review=True, vault=vault, paddle_models=options.paddle_models,
-                          person_names=options.person_names, phone_regions=options.phone_regions, observe=measure)
+                          person_names=options.person_names, phone_regions=options.phone_regions, observe=measure,
+                          llm_model=options.llm_names)
             worker.verify(target, review=True, vault=vault, person_names=options.person_names,
                           phone_regions=options.phone_regions, observe_ocr=audit)
         finally:
@@ -157,9 +158,12 @@ def run(totals):
     parser.add_argument("--paddle-models", type=Path)
     parser.add_argument("--person-names", action="store_true")
     parser.add_argument("--phone-regions", type=lambda value: value.split(",") if value else [])
+    parser.add_argument("--llm-names", type=Path)
     options = parser.parse_args()
     if options.paddle_models is not None:
         options.paddle_models = options.paddle_models.resolve()
+    if options.llm_names is not None:
+        options.llm_names = options.llm_names.resolve()
     root = options.manifest.absolute().parent
     info = root.stat()
     worker.require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077,

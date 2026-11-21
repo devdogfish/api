@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ComputeAdmission } from '../computeAdmission'
+import type { DocumentType } from './documentTypes'
 import { createVerifiedPrivateRedactionExecutor } from './privateRedaction'
 
 export type ExactMatchPdf = {
@@ -11,25 +12,30 @@ export type ExactMatchPdf = {
   safeTextByPage: readonly (readonly string[])[]
   language?: 'eng' | 'deu'
   structuredIdentifiers?: boolean
+  /** Required for review; Vault-only and unknown types are refused before any redacted copy exists. */
+  documentType?: DocumentType
 }
 
 const worker = fileURLToPath(new URL('./exact_match_pdf.py', import.meta.url))
 const maxPdfBytes = 25 * 1024 * 1024
 
-type Detectors = { paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[] }
+type Detectors = { paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[]; llmNames?: string }
 
 async function run(python: string, mode: string, candidate: string, vaultDraft?: string, detectors?: Detectors) {
-  const { paddleModels, personNames, phoneRegions } = detectors ?? {}
+  const { paddleModels, personNames, phoneRegions, llmNames } = detectors ?? {}
   const args = [python, worker, mode, dirname(candidate)]
   if (vaultDraft) args.push(vaultDraft)
   if (paddleModels !== undefined) args.push('--paddle-models', resolve(paddleModels))
   if (personNames) args.push('--person-names')
   if (phoneRegions !== undefined) args.push('--phone-regions', phoneRegions.join(','))
-  const env = { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
+  if (llmNames !== undefined) args.push('--llm-names', resolve(llmNames))
+  const env: Record<string, string> = { PATH: process.env.PATH ?? '', PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }
+  if (llmNames !== undefined && process.env.GIRKE_LLAMA_COMPLETION) env.GIRKE_LLAMA_COMPLETION = process.env.GIRKE_LLAMA_COMPLETION
   const child = Bun.spawn(args, {
     stdin: 'ignore', stdout: 'pipe', stderr: 'ignore',
     env: paddleModels === undefined ? env : { ...env, HOME: dirname(candidate) },
-    timeout: paddleModels !== undefined || personNames || phoneRegions !== undefined ? 300_000 : undefined,
+    // The local name model runs on CPU on vm ai and needs longer than the other detectors.
+    timeout: llmNames !== undefined ? 1_800_000 : paddleModels !== undefined || personNames || phoneRegions !== undefined ? 300_000 : undefined,
     killSignal: 'SIGKILL'
   })
   const [status, output] = await Promise.all([child.exited, new Response(child.stdout).text()])

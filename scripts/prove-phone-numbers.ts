@@ -117,7 +117,7 @@ try {
     structuredIdentifiers: true, safeTextByPage: [anchors, anchors]
   }
   const started = performance.now()
-  const prepared = await review.prepare(job)
+  const prepared = await review.prepare({ ...job, documentType: 'correspondence' })
   const elapsed = (performance.now() - started) / 1000
   const [attempt] = await readdir(scratch)
   const planPath = join(scratch, attempt, 'review-plan.json')
@@ -160,9 +160,9 @@ try {
   assert.ok(!(await Bun.file(join(control, 'review.pdf')).exists()))
 
   const invalid = createPrivatePdfReview(gate, scratch, python, { vaultRoot, phoneRegions: ['ZZ'] })
-  await assert.rejects(invalid.prepare(job), UnverifiedRedactionError)
+  await assert.rejects(invalid.prepare({ ...job, documentType: 'correspondence' }), UnverifiedRedactionError)
   const noMapping = createPrivatePdfReview(gate, scratch, python, { phoneRegions: [] })
-  await assert.rejects(noMapping.prepare(job), InvalidPdfReviewError)
+  await assert.rejects(noMapping.prepare({ ...job, documentType: 'correspondence' }), InvalidPdfReviewError)
   assert.deepEqual(await readdir(scratch), [])
   console.log('PASS planted residual, changed/invalid region and missing private mapping refused; scratch cleared')
 } finally {

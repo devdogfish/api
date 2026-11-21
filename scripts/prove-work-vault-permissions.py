@@ -25,7 +25,7 @@ import { createPrivatePdfReview } from './src/redaction/privatePdfReview'
 
 const [scratch, vaultRoot, workRoot, input, python] = JSON.parse(process.env.GIRKE_FIXTURE_PATHS)
 const review = createPrivatePdfReview(new ComputeAdmission(), scratch, python, { vaultRoot, workRoot })
-const prepared = await review.prepare({
+const prepared = await review.prepare({ documentType: 'correspondence',
   pdf: await readFile(input),
   identifiers: ['ORCHID FICTIONAL'], identifierTypes: ['PERSON'], language: 'eng',
   safeTextByPage: [['PUBLIC FICTIONAL SAMPLE']],

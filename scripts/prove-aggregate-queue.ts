@@ -234,7 +234,7 @@ try {
 
   const ocr = track(upload('/api/v1/ocr', 'synthetic.png', picture))
   await until(() => admission.calls === 3, 'OCR was not queued')
-  const review = track(reviewer.prepare(settings))
+  const review = track(reviewer.prepare({ ...settings, documentType: 'correspondence' }))
   await until(() => admission.calls === 4, 'private review was not queued')
   const overflow = await upload('/api/v1/ocr', 'overflow.png', picture)
   assert.equal(overflow.status, 503)
@@ -269,7 +269,7 @@ try {
   console.log('PASS real async Whisper → OCR → verified PDF FIFO, overflow and queued cancellation')
 
   const activeCancel = new AbortController()
-  const cancelled = track(assert.rejects(reviewer.prepare(settings, activeCancel.signal), { name: 'AbortError' }))
+  const cancelled = track(assert.rejects(reviewer.prepare({ ...settings, documentType: 'correspondence' }, activeCancel.signal), { name: 'AbortError' }))
   await until(() => admission.starts.at(-1) === 6, 'cancelled review did not acquire the slot')
   await until(() => [...currentRssKiB()].some(([pid, rss]) =>
     pid !== process.pid && pid !== sidecar.pid && rss > 16 * 1024), 'cancelled native worker did not start')

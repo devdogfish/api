@@ -21,6 +21,7 @@ from pypdf import PdfReader, PdfWriter
 
 from paddle_scan import PaddleScan
 from person_names import PersonNames
+from llm_names import LocalNameModel
 from phone_numbers import PhoneNumbers
 from placeholder_pixels import apply_patches, subtract
 from structured_identifiers import structured_matches, structured_value
@@ -213,8 +214,12 @@ def detected_occurrences(lines, exact, structured, names, phones):
     for term, (identity, value) in exact.items():
         for start in matching_starts(sequence, term):
             selected = parts[start:start + len(term)]
-            deterministic.append((selected[0][3], selected[-1][4]))
             listed = term not in getattr(exact, "learned", ())
+            span = (selected[0][3], selected[-1][4])
+            # A learned name inside text already matched by the Owner's list is covered by that match.
+            if not listed and any(left <= span[0] and span[1] <= right for left, right in deterministic):
+                continue
+            deterministic.append(span)
             yield occurrence(identity, value, ((index, box) for _, index, box, _, _ in selected), listed)
     joined = "\n".join(text_lines)
     ends = [end for _, end, _, _ in words]
@@ -247,11 +252,12 @@ def detected_occurrences(lines, exact, structured, names, phones):
 
 
 def declared_safe(hit, safe):
+    # Model-guessed names under three letters match OCR noise and are left to the verifier.
     # The Owner's declared safe text outranks a model-guessed name that overlaps it. The verifier's
     # independent name check still fails closed if a real name is left behind.
     words = {token for token in tokens(hit.value) if token.isalnum()}
     return (hit.identity[0] == "PERSON" and not hit.listed
-            and any(words & set(anchor) for anchor in safe))
+            and (any(words & set(anchor) for anchor in safe) or sum(map(len, words)) < 3))
 
 
 def merge_occurrences(observed):
@@ -266,7 +272,9 @@ def merge_occurrences(observed):
             group = overlaps + [current]
             # Anything involving the Owner's list stays ambiguous and fails closed. Overlapping model
             # guesses (OCR variants of one name) are redacted as their union under the longest name.
-            require(not any(hit.listed for hit in group) and all(hit.identity[0] == "PERSON" for hit in group),
+            # A deterministic match (email, IBAN, phone) covering a model-guessed name wins.
+            require(not any(hit.listed for hit in group) and
+                    len({hit.identity for hit in group if hit.identity[0] != "PERSON"}) <= 1,
                     "conflicting identifier geometries")
             keep = max(group, key=lambda hit: (hit.listed, hit.identity[0] != "PERSON", len(tokens(hit.value))))
             for hit in overlaps:
@@ -293,9 +301,11 @@ def merge_occurrences(observed):
 
 
 def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names, phones,
-                      safe=()):
+                      safe=(), locate_lines=()):
     observed = list(detected_occurrences(text_boxes(page), exact, structured, names, phones))
     observed.extend(detected_occurrences(ocr_lines, exact, structured, names, phones))
+    # Locate listed and learned terms in a second transcription; detectors still run on the first two.
+    observed.extend(detected_occurrences(locate_lines, exact, False, None, None))
     observed = [hit for hit in observed if not declared_safe(hit, safe)]
     boxes = []
     placements = []
@@ -382,7 +392,7 @@ def raster_digest(pixels):
 
 
 def redact(directory, review=False, vault=None, paddle_models=None, person_names=False, phone_regions=None,
-           observe=None):
+           observe=None, llm_model=None):
     terms, anchors, language, structured = settings(directory, person_names or phone_regions is not None)
     phones = PhoneNumbers(phone_regions) if phone_regions is not None else None
     names = PersonNames(language) if person_names else None
@@ -409,6 +419,23 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
                                 and not declared_safe(hit, anchors[page.number])):
                             exact[hit.identity[1]] = (hit.identity, hit.value)
                             exact.learned.add(hit.identity[1])
+        require(llm_model is None or exact is not None, "the local name model requires a Vault mapping")
+        if exact is not None and llm_model is not None:
+            # Owner-approved second pass (quantself#698): a local 4B model proposes names the NER missed.
+            require(names is not None, "the local name model extends the person detector")
+            llm = LocalNameModel(llm_model)
+            for page, ocr_lines in zip(source, scanned, strict=True):
+                safe = anchors[page.number]
+                for lines in (text_boxes(page), ocr_lines):
+                    text = "\n".join(" ".join(word for word, _ in line) for line in lines)
+                    for term in llm.spans(text, tokens):
+                        if term in exact or any(set(term) & set(anchor) for anchor in safe):
+                            continue
+                        value = " ".join(term)
+                        exact[term] = (("PERSON", term), value)
+                        exact.learned.add(term)
+        else:
+            llm = None
         for page, ocr_lines in zip(source, scanned, strict=True):
             pixels = raster(page)
             if observe is not None:
@@ -416,7 +443,8 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
             if exact is not None:
                 boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
                                                       counters, ocr_lines, names, phones,
-                                                      safe=anchors[page.number])
+                                                      safe=anchors[page.number],
+                                                      locate_lines=ocr_boxes(page, pixels, language) if paddle else ())
                 placements_by_page.append(placements)
             else:
                 boxes = list(identifier_boxes(text_boxes(page), terms, structured))
@@ -446,6 +474,8 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
             plan["paddle"] = paddle.measurement()
         if names:
             plan["names"] = names.measurement()
+        if llm is not None:
+            plan["llmNames"] = llm.measurement()
         if phones:
             plan["phones"] = phones.measurement()
         if vault is not None:
@@ -592,8 +622,12 @@ def verify(directory, review=False, vault=None, person_names=False, phone_region
                 require(all(contains(seen, term) for term in safe), "safe text missing")
                 if names and text not in audited:
                     # These generated labels have already passed exact patch verification.
-                    require(not names.spans(remove_review_labels(text, page_labels)),
-                            "person name remains in independent OCR")
+                    checked = remove_review_labels(text, page_labels)
+                    # Words the Owner declared safe on this page are not names; every other span fails.
+                    declared = {token for anchor in safe for token in anchor}
+                    flagged = [span for span in names.spans(checked)
+                               if not {token for token in tokens(checked[span[0]:span[1]]) if token.isalnum()} <= declared]
+                    require(not flagged, "person name remains in independent OCR")
                     audited.add(text)
             if review:
                 add_review_page(preview, original, rendered, boxes)
@@ -622,6 +656,7 @@ if __name__ == "__main__":
     parser.add_argument("--paddle-models", type=Path)
     parser.add_argument("--person-names", action="store_true")
     parser.add_argument("--phone-regions")
+    parser.add_argument("--llm-names", type=Path)
     args = parser.parse_args()
     action, _, suffix = args.mode.partition("-")
     require(args.vault is None or suffix == "review", "invalid worker mode")
@@ -630,7 +665,7 @@ if __name__ == "__main__":
     regions = None if args.phone_regions is None else (args.phone_regions.split(",") if args.phone_regions else [])
     if action == "redact":
         redact(args.location, review=suffix == "review", vault=args.vault, paddle_models=args.paddle_models,
-               person_names=args.person_names, phone_regions=regions)
+               person_names=args.person_names, phone_regions=regions, llm_model=args.llm_names)
     else:
-        require(args.paddle_models is None, "verification uses independent OCR")
+        require(args.paddle_models is None and args.llm_names is None, "verification uses independent OCR")
         verify(args.location, review=suffix == "review", vault=args.vault, person_names=args.person_names, phone_regions=regions)

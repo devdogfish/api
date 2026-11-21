@@ -78,7 +78,7 @@ try {
   const firstJob = {
     ...settings, pdf: await readFile(join(root, 'FIRST.pdf')), safeTextByPage: [anchors('FIRST'), anchors('FIRST')]
   }
-  const first = await reviewer.prepare(firstJob)
+  const first = await reviewer.prepare({ ...firstJob, documentType: 'correspondence' })
   const [name] = await readdir(scratch)
   const directory = join(scratch, name)
   const candidate = join(directory, 'candidate.pdf')
@@ -95,7 +95,7 @@ try {
   assert.equal(checked.status, 0, checked.stderr)
   console.log('PASS private highlighted text/scan review shows exact verified candidate pixels')
 
-  const second = await reviewer.prepare({
+  const second = await reviewer.prepare({ documentType: 'correspondence',
     ...settings, pdf: await readFile(join(root, 'SECOND.pdf')), safeTextByPage: [anchors('SECOND')]
   })
   const otherAttempt = (await readdir(scratch)).find(entry => entry !== name)
