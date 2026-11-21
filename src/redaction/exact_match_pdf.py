@@ -336,6 +336,16 @@ def plan_placeholders(page, pixels, exact, structured, identities, values, count
         placements.append((list(pieces[display]), label))
         placements.extend((list(part), None) for i, part in enumerate(pieces) if i != display)
         painted.extend(pieces)
+        # OCR word boxes can clip ascenders: blank a strip above each fragment (label stays inside it).
+        for box in fragments:
+            strip = pdf.Rect(box.x0, box.y0 - box.height * 0.3, box.x1, box.y0) & page.rect
+            extra = [(strip * scale).irect & pixels.irect]
+            for covered in painted:
+                extra = [part for piece in extra for part in subtract(piece, covered)]
+            extra = [part for part in extra if not part.is_empty]
+            placements.extend((list(part), None) for part in extra)
+            boxes.extend(pdf.Rect(part) * ~scale for part in extra)
+            painted.extend(extra)
     return boxes, placements
 
 
