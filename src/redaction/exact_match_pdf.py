@@ -549,6 +549,23 @@ def add_review_page(review, original, candidate_pixels, boxes):
                        color=(0.8, 0.13, 0.03), width=1)
 
 
+def canonical_placeholders(rows, patches):
+    # Placeholder regions were just checked pixel for pixel against the generated label, so OCR rows
+    # wholly inside one can only be that label, sometimes misread (a stray '@'). Read them as the exact
+    # label once; blank regions carry no text.
+    regions = [(pdf.IRect(coords) + (-1, -1, 1, 1), label) for coords, label in patches]
+    kept, used = [], set()
+    for row in rows:
+        x, y, w, h = (int(row[key]) for key in ("left", "top", "width", "height"))
+        region = next((i for i, (box, _) in enumerate(regions) if box.contains(pdf.IRect(x, y, x + w, y + h))), None)
+        if region is None:
+            kept.append(row)
+        elif regions[region][1] is not None and region not in used:
+            used.add(region)
+            kept.append({**row, "text": regions[region][1]})
+    return kept
+
+
 def remove_review_labels(text, labels):
     def replace(match):
         label = re.sub(r"[ _]+", "_", match.group())
@@ -614,7 +631,7 @@ def verify(directory, review=False, vault=None, person_names=False, phone_region
             # Audit across lines and use a different segmentation mode from the detector.
             audited = set()
             for pixels in (embedded, rendered):
-                text = ocr_text(ocr(pixels, language, 11))
+                text = ocr_text(canonical_placeholders(ocr(pixels, language, 11), patches))
                 if observe_ocr is not None:
                     observe_ocr(page.number, text)
                 seen = check_identifiers(text, terms, structured, "identifier remains in raster OCR",

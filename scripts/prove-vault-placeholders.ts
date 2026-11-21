@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ComputeAdmission } from '../src/computeAdmission'
 import { UnverifiedRedactionError } from '../src/redaction/privateRedaction'
@@ -118,6 +118,36 @@ mapping_path.write_bytes(payload)
 plan.update(digest=digest, mappingDigest=hashlib.sha256(payload).hexdigest())
 plan_path.write_text(json.dumps(plan))
 (directory / "rasters.json").write_text(json.dumps(rasters))
+`
+
+const placeholderRows = `
+import sys
+sys.path.insert(0, sys.argv[1])
+import exact_match_pdf as w
+row = lambda text, x, y, wd, h: {"text": text, "left": str(x), "top": str(y), "width": str(wd), "height": str(h),
+                                  "block_num": "1", "par_num": "1", "line_num": "1"}
+patches = [([100, 100, 300, 150], "[EMAIL_1]"), ([100, 200, 160, 230], None)]
+garbled = row("EMAIL@1]", 110, 112, 120, 24)          # a misread of the generated label
+split = row("1]", 240, 112, 30, 24)                   # the same label read as a second word
+edge = row("sample@example.invalid", 290, 110, 200, 24)  # starts inside, ends outside the label
+blank = row("@", 120, 205, 10, 12)
+outside = row("PUBLIC", 400, 400, 80, 20)
+read = w.canonical_placeholders([garbled, split, edge, blank, outside], patches)
+assert [r["text"] for r in read] == ["[EMAIL_1]", "sample@example.invalid", "PUBLIC"], read
+assert w.canonical_placeholders([garbled], []) == [garbled]
+w.check_identifiers(w.ocr_text([read[0], read[2]]), [], True, "identifier remains in raster OCR")
+try:
+    w.check_identifiers(w.ocr_text(read), [], True, "identifier remains in raster OCR")
+except RuntimeError as error:
+    assert "structured identifier remains" in str(error), error
+else:
+    raise AssertionError("a structured identifier crossing a label edge must still fail")
+try:
+    w.check_identifiers(w.ocr_text([garbled]), [], True, "identifier remains in raster OCR")
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("without the verified label region the misread must still fail")
 `
 
 async function run(...args: string[]) {
@@ -274,7 +304,9 @@ try {
   await assert.rejects(reviewer.prepare({ ...conflict, documentType: 'correspondence' }), UnverifiedRedactionError)
   assert.deepEqual(await readdir(scratch), [])
   assert.deepEqual(await readdir(vault), [second.candidateSha256])
-  console.log(`PASS stable repeated/wrapped labels across text and scan, approved local Work handoff and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
+  const labelRows = await run('-c', placeholderRows, dirname(worker))
+  assert.equal(labelRows.status, 0, labelRows.stderr)
+  console.log(`PASS stable repeated/wrapped labels across text and scan, OCR inside verified labels read as the label, approved local Work handoff and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
 } finally {
   await rm(root, { recursive: true, force: true })
 }
