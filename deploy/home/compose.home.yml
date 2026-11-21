@@ -1,0 +1,26 @@
+# Home override for vm api on Atlas (VM 3500). Used with docker-compose.yml:
+#   docker compose -p girke -f docker-compose.yml -f deploy/home/compose.home.yml ...
+# The deployer sets GIRKE_RELEASE_SHA; /version reports it.
+services:
+  girke-api:
+    image: girke-api:${GIRKE_RELEASE_SHA:?}
+    environment:
+      APP_VERSION: ${GIRKE_RELEASE_SHA:?}
+
+  whisper:
+    image: girke-whisper:${GIRKE_RELEASE_SHA:?}
+
+  edge:
+    container_name: girke-edge
+    image: caddy:2.11.4-alpine
+    depends_on:
+      - girke-api
+    # Loopback only. `tailscale serve --tcp=8080` exposes it to Gate on the tailnet.
+    ports:
+      - '127.0.0.1:8080:8080'
+    volumes:
+      - ./deploy/home/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/girke-api/boards:/srv/boards:ro
+    networks:
+      - girke-edge
+    restart: unless-stopped

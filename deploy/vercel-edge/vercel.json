@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "rewrites": [
+    { "source": "/", "destination": "https://gate.tail555ca5.ts.net:10000/" },
+    { "source": "/:path*", "destination": "https://gate.tail555ca5.ts.net:10000/:path*" }
+  ]
+}

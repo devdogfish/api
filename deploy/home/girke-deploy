@@ -1,0 +1,126 @@
+#!/bin/bash
+# Pull-based release for vm api (Atlas VM 3500). Runs as root from girke-deploy.timer.
+#
+#   girke-deploy            deploy the newest commit on origin/main if it is new
+#   girke-deploy --ref REF  deploy REF once (staging before cutover; not for production)
+#   girke-deploy status     print current, previous and last failed release
+#
+# The repository is public, so nothing pushes into this VM: it fetches main over
+# HTTPS with no credentials. Merges are never held; several merges in a row
+# deploy as the newest one. A release builds, migrates, recreates the API and
+# Whisper, then must answer /health and report its SHA at /version within 90 s.
+# Otherwise the previous release's images come back and the SHA is recorded as
+# failed, so the timer does not retry it until main moves on.
+set -Eeuo pipefail
+umask 027
+
+ROOT=/srv/girke-api
+REPO="$ROOT/repo"
+RELEASES="$ROOT/releases"
+STATE="$ROOT/state"
+REMOTE=https://github.com/devdogfish/api.git
+PROJECT=girke
+
+log() { printf '%s girke-deploy: %s\n' "$(date -Is)" "$*"; }
+
+exec 9>"$STATE/lock"
+flock -n 9 || { log "another release is running"; exit 0; }
+
+compose() {
+  local sha=$1; shift
+  GIRKE_RELEASE_SHA="$sha" docker compose --project-name "$PROJECT" \
+    --project-directory "$RELEASES/$sha" \
+    -f "$RELEASES/$sha/docker-compose.yml" -f "$RELEASES/$sha/deploy/home/compose.home.yml" "$@"
+}
+
+healthy() {
+  local sha=$1
+  for _ in $(seq 1 30); do
+    if curl -fsS --max-time 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q '"ok":true' &&
+       [ "$(curl -fsS --max-time 3 http://127.0.0.1:8080/version 2>/dev/null)" = "{\"version\":\"$sha\"}" ]; then
+      return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+
+stage() {
+  local sha=$1
+  [ -d "$RELEASES/$sha" ] && return 0
+  rm -rf -- "$RELEASES/$sha.tmp"
+  mkdir -p "$RELEASES/$sha.tmp"
+  git -C "$REPO" archive "$sha" | tar -xf - -C "$RELEASES/$sha.tmp"
+  ln -s "$ROOT/.env" "$RELEASES/$sha.tmp/.env"
+  mv "$RELEASES/$sha.tmp" "$RELEASES/$sha"
+}
+
+restore() {
+  local sha=$1 previous=$2
+  printf '%s\n' "$sha" >"$STATE/failed"
+  log "release $sha failed; restoring ${previous:-nothing}"
+  if [ -n "$previous" ]; then
+    compose "$previous" up -d --no-deps --force-recreate whisper girke-api edge || true
+    if healthy "$previous"; then log "restored $previous"; else log "restore of $previous is unhealthy"; fi
+  fi
+}
+
+release() {
+  local sha=$1 previous
+  previous=$(cat "$STATE/current" 2>/dev/null || true)
+  log "releasing $sha (previous ${previous:-none})"
+  # Any failing step (build, migration, start) restores the previous release.
+  trap 'restore "$sha" "$previous"; exit 1' ERR
+  stage "$sha"
+  compose "$sha" config --quiet
+  compose "$sha" build girke-api whisper
+  compose "$sha" up -d --no-deps postgres
+  compose "$sha" run --rm --no-deps -T girke-api bun run db:migrate </dev/null
+  compose "$sha" up -d --no-deps --force-recreate whisper girke-api
+  compose "$sha" up -d --no-deps edge
+  healthy "$sha"
+  trap - ERR
+  [ -n "$previous" ] && [ "$previous" != "$sha" ] && printf '%s\n' "$previous" >"$STATE/previous"
+  printf '%s\n' "$sha" >"$STATE/current"
+  rm -f "$STATE/failed"
+  log "released $sha"
+  prune
+}
+
+prune() {
+  local keep current previous dir image
+  current=$(cat "$STATE/current" 2>/dev/null || true)
+  previous=$(cat "$STATE/previous" 2>/dev/null || true)
+  for dir in "$RELEASES"/*; do
+    [ -d "$dir" ] || continue
+    case "$(basename "$dir")" in "$current" | "$previous") ;; *) rm -rf -- "$dir" ;; esac
+  done
+  docker image ls --format '{{.Repository}}:{{.Tag}}' | while read -r image; do
+    case "$image" in
+      girke-api:* | girke-whisper:*)
+        keep=${image#*:}
+        [ "$keep" = "$current" ] || [ "$keep" = "$previous" ] || docker image rm "$image" >/dev/null || true ;;
+    esac
+  done
+  docker builder prune -f --filter until=168h >/dev/null || true
+}
+
+case "${1:-}" in
+  status)
+    for f in current previous failed; do printf '%s=%s\n' "$f" "$(cat "$STATE/$f" 2>/dev/null || true)"; done
+    exit 0 ;;
+  --ref)
+    [ $# -eq 2 ] || { echo "usage: girke-deploy [--ref REF | status]" >&2; exit 2; }
+    git -C "$REPO" fetch --quiet --prune "$REMOTE" "$2"
+    release "$(git -C "$REPO" rev-parse FETCH_HEAD)"
+    exit 0 ;;
+  "") ;;
+  *) echo "usage: girke-deploy [--ref REF | status]" >&2; exit 2 ;;
+esac
+
+git -C "$REPO" fetch --quiet --prune "$REMOTE" main
+sha=$(git -C "$REPO" rev-parse FETCH_HEAD)
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+[ "$sha" = "$(cat "$STATE/current" 2>/dev/null || true)" ] && exit 0
+[ "$sha" = "$(cat "$STATE/failed" 2>/dev/null || true)" ] && exit 0
+release "$sha"
