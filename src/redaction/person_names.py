@@ -32,16 +32,22 @@ class PersonNames:
         self.inference_cpu = 0
         self.calls = 0
         self.detections = 0
+        self.cache = {}
 
     def spans(self, text):
         if not text.strip():
             return []
+        # Name discovery and placement read the same page text; infer once per text.
+        if text in self.cache:
+            self.detections += len(self.cache[text])
+            return list(self.cache[text])
         started = process_time()
         spans = [(entity.start_char, entity.end_char) for entity in self.pipeline(text).ents
                  if entity.label_ == self.label]
         self.calls += 1
         self.detections += len(spans)
         self.inference_cpu += process_time() - started
+        self.cache[text] = tuple(spans)
         return spans
 
     def measurement(self):

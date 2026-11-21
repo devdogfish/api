@@ -140,6 +140,15 @@ class Occurrence:
     identity: tuple
     value: str
     boxes: list
+    listed: bool = False  # matched the Owner's exact list rather than a detector or a learned name
+
+
+class LearnedTerms(dict):
+    """Exact terms plus person names learned from detectors in the same document."""
+
+    def __init__(self, listed):
+        super().__init__(listed)
+        self.learned = set()
 
 
 def exact_identities(directory, structured, phones):
@@ -173,7 +182,7 @@ def exact_identities(directory, structured, phones):
     return exact
 
 
-def occurrence(identity, value, words):
+def occurrence(identity, value, words, listed=False):
     lines = {}
     for index, box in words:
         lines[index] = lines.get(index, pdf.Rect()) | box
@@ -181,7 +190,7 @@ def occurrence(identity, value, words):
     for left, right in zip(boxes, boxes[1:]):
         require(left.y0 < right.y0 and right.y0 - left.y1 <= 2 * max(left.height, right.height),
                 "uncertain identifier line wrap")
-    return Occurrence(identity, value, boxes)
+    return Occurrence(identity, value, boxes, listed)
 
 
 def detected_occurrences(lines, exact, structured, names, phones):
@@ -205,7 +214,8 @@ def detected_occurrences(lines, exact, structured, names, phones):
         for start in matching_starts(sequence, term):
             selected = parts[start:start + len(term)]
             deterministic.append((selected[0][3], selected[-1][4]))
-            yield occurrence(identity, value, ((index, box) for _, index, box, _, _ in selected))
+            listed = term not in getattr(exact, "learned", ())
+            yield occurrence(identity, value, ((index, box) for _, index, box, _, _ in selected), listed)
     joined = "\n".join(text_lines)
     ends = [end for _, end, _, _ in words]
 
@@ -236,6 +246,14 @@ def detected_occurrences(lines, exact, structured, names, phones):
             yield occurrence(("PERSON", tokens(value)), value, region(start, end))
 
 
+def declared_safe(hit, safe):
+    # The Owner's declared safe text outranks a model-guessed name that overlaps it. The verifier's
+    # independent name check still fails closed if a real name is left behind.
+    words = {token for token in tokens(hit.value) if token.isalnum()}
+    return (hit.identity[0] == "PERSON" and not hit.listed
+            and any(words & set(anchor) for anchor in safe))
+
+
 def merge_occurrences(observed):
     unique = []
     for current in observed:
@@ -244,8 +262,24 @@ def merge_occurrences(observed):
         if not overlaps:
             unique.append(current)
             continue
-        require(len(overlaps) == 1 and overlaps[0].identity == current.identity,
-                "conflicting identifier geometries")
+        if len(overlaps) > 1 or overlaps[0].identity != current.identity:
+            group = overlaps + [current]
+            # Anything involving the Owner's list stays ambiguous and fails closed. Overlapping model
+            # guesses (OCR variants of one name) are redacted as their union under the longest name.
+            require(not any(hit.listed for hit in group) and all(hit.identity[0] == "PERSON" for hit in group),
+                    "conflicting identifier geometries")
+            keep = max(group, key=lambda hit: (hit.listed, hit.identity[0] != "PERSON", len(tokens(hit.value))))
+            for hit in overlaps:
+                unique.remove(hit)
+            merged = Occurrence(keep.identity, keep.value, [], any(hit.listed for hit in group))
+            for hit in group:
+                for box in hit.boxes:
+                    for candidate in [c for c in merged.boxes if c.intersects(box)]:
+                        merged.boxes.remove(candidate)
+                        box = box | candidate
+                    merged.boxes.append(box)
+            unique.append(merged)
+            continue
         prior = overlaps[0]
         for box in current.boxes:
             touched = [candidate for candidate in prior.boxes if candidate.intersects(box)]
@@ -258,9 +292,11 @@ def merge_occurrences(observed):
     return sorted(unique, key=lambda hit: min((box.y0, box.x0) for box in hit.boxes))
 
 
-def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names, phones):
+def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names, phones,
+                      safe=()):
     observed = list(detected_occurrences(text_boxes(page), exact, structured, names, phones))
     observed.extend(detected_occurrences(ocr_lines, exact, structured, names, phones))
+    observed = [hit for hit in observed if not declared_safe(hit, safe)]
     boxes = []
     placements = []
     painted = []
@@ -358,14 +394,29 @@ def redact(directory, review=False, vault=None, paddle_models=None, person_names
     with pdf.open(directory / "source.pdf") as source, pdf.open() as output:
         check_source(source, anchors)
         paddle = PaddleScan(paddle_models) if paddle_models is not None else None
+        scanned = []
         for page in source:
             pixels = raster(page)
-            ocr_lines = paddle.lines(page, pixels) if paddle else ocr_boxes(page, pixels, language)
+            scanned.append(paddle.lines(page, pixels) if paddle else ocr_boxes(page, pixels, language))
+        listed = exact
+        if exact is not None and names is not None:
+            # A name found once is redacted wherever it appears; the verifier checks every occurrence.
+            exact = LearnedTerms(exact)
+            for page, ocr_lines in zip(source, scanned, strict=True):
+                for lines in (text_boxes(page), ocr_lines):
+                    for hit in detected_occurrences(lines, listed, structured, names, phones):
+                        if (hit.identity[0] == "PERSON" and hit.identity[1] not in exact
+                                and not declared_safe(hit, anchors[page.number])):
+                            exact[hit.identity[1]] = (hit.identity, hit.value)
+                            exact.learned.add(hit.identity[1])
+        for page, ocr_lines in zip(source, scanned, strict=True):
+            pixels = raster(page)
             if observe is not None:
-                observe(page, pixels, ocr_lines, exact, structured, names, phones)
+                observe(page, pixels, ocr_lines, listed, structured, names, phones)
             if exact is not None:
                 boxes, placements = plan_placeholders(page, pixels, exact, structured, identities, values,
-                                                      counters, ocr_lines, names, phones)
+                                                      counters, ocr_lines, names, phones,
+                                                      safe=anchors[page.number])
                 placements_by_page.append(placements)
             else:
                 boxes = list(identifier_boxes(text_boxes(page), terms, structured))
