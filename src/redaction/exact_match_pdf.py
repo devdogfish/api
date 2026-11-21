@@ -263,6 +263,7 @@ def plan_placeholders(page, pixels, exact, structured, identities, values, count
     observed.extend(detected_occurrences(ocr_lines, exact, structured, names, phones))
     boxes = []
     placements = []
+    painted = []
     scale = pdf.Matrix(pixels.width / page.rect.width, pixels.height / page.rect.height)
     for hit in merge_occurrences(observed):
         if hit.identity not in identities:
@@ -273,19 +274,22 @@ def plan_placeholders(page, pixels, exact, structured, identities, values, count
             values[label] = hit.value
         label = identities[hit.identity]
         fragments = [(box + (-2, -2, 2, 2)) & page.rect for box in hit.boxes]
-        pixel_boxes = [(box * scale).irect & pixels.irect for box in fragments]
-        # Use the fragment that accommodates the largest readable label.
-        display = max(range(len(pixel_boxes)), key=lambda i: min(
-            pixel_boxes[i].width / (len(label) * 0.6), pixel_boxes[i].height / 1.3))
         boxes.extend(fragments)
-        painted = [pixel_boxes.pop(display)]
-        placements.append((list(painted[0]), label))
-        for box in pixel_boxes:
+        # Padded boxes of neighbouring identifiers can touch; only paint what is still uncovered.
+        pieces = []
+        for box in ((box * scale).irect & pixels.irect for box in fragments):
             uncovered = [box]
-            for covered in painted:
+            for covered in painted + pieces:
                 uncovered = [part for piece in uncovered for part in subtract(piece, covered)]
-            placements.extend((list(part), None) for part in uncovered)
-            painted.extend(uncovered)
+            pieces.extend(part for part in uncovered if not part.is_empty)
+        if not pieces:
+            continue
+        # Use the piece that accommodates the largest readable label.
+        display = max(range(len(pieces)), key=lambda i: min(
+            pieces[i].width / (len(label) * 0.6), pieces[i].height / 1.3))
+        placements.append((list(pieces[display]), label))
+        placements.extend((list(part), None) for i, part in enumerate(pieces) if i != display)
+        painted.extend(pieces)
     return boxes, placements
 
 
