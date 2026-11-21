@@ -4,6 +4,8 @@ import re
 
 import pymupdf as pdf
 
+# Smallest label size, in raster pixels, worth drawing; smaller regions are blanked.
+MIN_LABEL_SIZE = 10
 LABEL = re.compile(r"\[(?:PERSON|IDENTIFIER|IBAN|TAX_ID|EMAIL|PHONE)_[1-9][0-9]*\]")
 
 
@@ -16,8 +18,10 @@ def patch(box, label):
         raise ValueError("invalid placeholder label")
     unit_width = pdf.get_text_length(label, fontname="cour", fontsize=1)
     size = min(64, (box.width - 8) / unit_width, (box.height - 8) / 1.3)
-    if size < 24:
-        raise ValueError("placeholder does not fit the redacted region")
+    if size < MIN_LABEL_SIZE:
+        # Short identifiers (a first name, a two-digit code) leave too little room for
+        # the label. The region is still fully replaced; the label stays in the mapping.
+        return patch(box, None)
     with pdf.open() as document:
         page = document.new_page(width=box.width, height=box.height)
         page.insert_text((4, (box.height + size * 0.55) / 2), label, fontname="cour", fontsize=size)
