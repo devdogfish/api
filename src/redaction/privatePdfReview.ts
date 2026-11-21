@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { link, lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { ComputeAdmission } from '../computeAdmission'
+import { type DocumentType, isExportableDocumentType, VaultOnlyDocumentError } from './documentTypes'
 import { createPdfReviewPreparer, type ExactMatchPdf } from './exactMatchPdf'
 
 type Review = Readonly<{ candidateSha256: string; reviewSha256: string }>
@@ -101,7 +102,7 @@ async function workDirectory(path: string, vault: string, scratchRoot: string) {
 
 /** In-process boundary for the trusted local owner workflow. Handles expire on discard or restart. */
 export function createPrivatePdfReview(
-  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot?: string; workRoot?: string; paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[] }
+  admission: ComputeAdmission, scratchRoot: string, python: string, options?: { vaultRoot?: string; workRoot?: string; paddleModels?: string; personNames?: boolean; phoneRegions?: readonly string[]; llmNames?: string }
 ) {
   const phoneRegions = options?.phoneRegions?.slice()
   const prepare = createPdfReviewPreparer(admission, scratchRoot, python, { ...options, phoneRegions })
@@ -140,7 +141,7 @@ export function createPrivatePdfReview(
   }
 
   return {
-    async prepare(job: ExactMatchPdf, signal?: AbortSignal): Promise<Review> {
+    async prepare(job: ExactMatchPdf & { documentType: DocumentType }, signal?: AbortSignal): Promise<Review> {
       let draft: string | undefined
       let candidate: string | undefined
       let mapping: Mapping | undefined
@@ -156,6 +157,7 @@ export function createPrivatePdfReview(
             phoneRegions.some(region => !/^[A-Z]{2}$/.test(region)))) {
           throw new InvalidPdfReviewError()
         }
+        if (!isExportableDocumentType(job.documentType)) throw new VaultOnlyDocumentError()
         if (vault) draft = await mkdtemp(join(vault, '.draft-'))
         const prepared = await prepare(job, draft, signal)
         candidate = prepared.candidate

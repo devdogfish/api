@@ -138,7 +138,7 @@ try {
       safeTextByPage: [fixture.safe, fixture.safe]
     }
     const start = performance.now()
-    const review = await reviewer.prepare({ pdf, ...settings })
+    const review = await reviewer.prepare({ documentType: 'correspondence', pdf, ...settings })
     const elapsed = (performance.now() - start) / 1000
     const [attempt] = await readdir(scratch)
     const plan = JSON.parse(await readFile(join(scratch, attempt, 'review-plan.json'), 'utf8'))
@@ -194,7 +194,7 @@ try {
   assert.match(overlap.stderr, /conflicting identifier geometries/)
   assert.ok(!(await Bun.file(join(ambiguous, 'candidate.pdf')).exists()))
   const noVault = createPrivatePdfReview(gate, scratch, python, { personNames: true })
-  await assert.rejects(noVault.prepare({ pdf: await readFile(fixture.source), identifiers: [], safeTextByPage: [] }),
+  await assert.rejects(noVault.prepare({ documentType: 'correspondence', pdf: await readFile(fixture.source), identifiers: [], safeTextByPage: [] }),
     InvalidPdfReviewError)
   assert.deepEqual(await readdir(scratch), [])
   console.log(`PASS labeled corpus: ${rawMisses}/8 raw NER misses, ${rawExtras} extra spans, 0/8 approved name leaks; planted residual, conflicting spans and missing private mapping refused`)

@@ -90,7 +90,7 @@ try {
     safeTextByPage: [['PUBLIC', 'REFERENCE', 'END OF SAMPLE'], ['PUBLIC SECOND INDEX', 'END OF SAMPLE']]
   }
   const started = performance.now()
-  const review = await reviewer.prepare(job)
+  const review = await reviewer.prepare({ ...job, documentType: 'correspondence' })
   const duration = (performance.now() - started) / 1000
   const [attempt] = await readdir(scratch)
   const directory = join(scratch, attempt)
@@ -128,11 +128,11 @@ try {
   const audit = await run(worker, 'verify-review', control)
   assert.notEqual(audit.status, 0)
   assert.match(audit.stderr, /identifier remains in raster OCR/)
-  await assert.rejects(scanOnly.prepare(missed), UnverifiedRedactionError)
+  await assert.rejects(scanOnly.prepare({ ...missed, documentType: 'correspondence' }), UnverifiedRedactionError)
   assert.deepEqual(await readdir(scratch), [])
 
   const unavailable = createPrivatePdfReview(admission, scratch, python, { paddleModels: join(root, 'missing') })
-  await assert.rejects(unavailable.prepare(job), UnverifiedRedactionError)
+  await assert.rejects(unavailable.prepare({ ...job, documentType: 'correspondence' }), UnverifiedRedactionError)
   assert.deepEqual(await readdir(scratch), [])
   console.log('PASS independent verifier refused a Paddle-path line-wrap miss; missing model files refused without fallback')
 } finally {

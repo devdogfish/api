@@ -164,13 +164,13 @@ try {
   await setDirectoryMode(nestedWork, workMode)
   for (const workRoot of [root, scratch, workAlias, nestedWork]) {
     const aliased = createPrivatePdfReview(admission, scratch, python, { vaultRoot: vault, workRoot })
-    await assert.rejects(aliased.prepare(job), InvalidPdfReviewError)
+    await assert.rejects(aliased.prepare({ ...job, documentType: 'correspondence' }), InvalidPdfReviewError)
   }
   await setDirectoryMode(work, workMode & ~0o010)
-  await assert.rejects(reviewer.prepare(job), InvalidPdfReviewError)
+  await assert.rejects(reviewer.prepare({ ...job, documentType: 'correspondence' }), InvalidPdfReviewError)
   if (process.platform === 'linux') {
     await setDirectoryMode(work, 0o750)
-    await assert.rejects(reviewer.prepare(job), InvalidPdfReviewError)
+    await assert.rejects(reviewer.prepare({ ...job, documentType: 'correspondence' }), InvalidPdfReviewError)
   }
   await setDirectoryMode(work, workMode)
   assert.deepEqual(await readdir(vault), [])
@@ -203,11 +203,11 @@ try {
   await Promise.all([rm(control, { recursive: true }), rm(controlVault, { recursive: true })])
   console.log('PASS verifier rejected source ink inside a placeholder despite matching file and raster digests')
 
-  const first = await reviewer.prepare(job)
+  const first = await reviewer.prepare({ ...job, documentType: 'correspondence' })
   const oldApproval = await reviewer.approve(first, await reviewer.inspect(first))
   const firstMapping = join(vault, first.candidateSha256, 'mapping.json')
   assert.deepEqual(JSON.parse(await readFile(firstMapping, 'utf8')), { candidateSha256: first.candidateSha256, values })
-  const second = await reviewer.prepare(job)
+  const second = await reviewer.prepare({ ...job, documentType: 'correspondence' })
   const mapping = join(vault, second.candidateSha256, 'mapping.json')
   assert.notEqual(first.candidateSha256, second.candidateSha256)
   assert.deepEqual(JSON.parse(await readFile(mapping, 'utf8')), { candidateSha256: second.candidateSha256, values })
@@ -268,10 +268,10 @@ try {
   assert.deepEqual(await readFile(mapping), original)
 
   const unsafe = createPrivatePdfReview(admission, scratch, python, { vaultRoot: scratch })
-  await assert.rejects(unsafe.prepare(job), InvalidPdfReviewError)
+  await assert.rejects(unsafe.prepare({ ...job, documentType: 'correspondence' }), InvalidPdfReviewError)
   const conflict = { ...job, identifiers: [...job.identifiers, 'VECTOR'],
     identifierTypes: ['PERSON', 'PERSON', 'IDENTIFIER'] as const }
-  await assert.rejects(reviewer.prepare(conflict), UnverifiedRedactionError)
+  await assert.rejects(reviewer.prepare({ ...conflict, documentType: 'correspondence' }), UnverifiedRedactionError)
   assert.deepEqual(await readdir(scratch), [])
   assert.deepEqual(await readdir(vault), [second.candidateSha256])
   console.log(`PASS stable repeated/wrapped labels across text and scan, approved local Work handoff and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
