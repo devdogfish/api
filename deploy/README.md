@@ -30,7 +30,7 @@ journalctl -u girke-deploy
 
 ## Setup
 
-1. Atlas: `ssh atlas-ops sudo -n /usr/local/libexec/agent-ops/vm-api-3500 create`, then `... up`.
+1. Atlas: `ssh atlas-ops sudo -n /usr/local/libexec/agent-ops/vm-service 3500 create`, then `... vm-service 3500 up`.
 2. Copy `home/` into the VM and run `setup-vm.sh` with a `tag:girke-api` auth key on stdin.
 3. Put the Hostinger `.env` at `/srv/girke-api/.env` (0600) and the Boards files in
    `/srv/girke-api/boards`; restore the Postgres dump; `girke-deploy --ref main`;
