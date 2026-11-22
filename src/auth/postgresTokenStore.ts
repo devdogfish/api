@@ -10,7 +10,7 @@ export function createPostgresApiTokenStore(database = db): ApiTokenStore {
       if (!isGirkeApiToken(token)) return null
 
       const [apiToken] = await database
-        .select({ id: apiTokens.id, name: apiTokens.name })
+        .select({ id: apiTokens.id, name: apiTokens.name, scopes: apiTokens.scopes })
         .from(apiTokens)
         .where(and(eq(apiTokens.tokenHash, hashApiToken(token)), isNull(apiTokens.revokedAt)))
         .limit(1)

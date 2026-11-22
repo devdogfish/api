@@ -34,9 +34,14 @@ export const OCR_TAG = {
   name: 'OCR',
   description: 'Protected OCR recognition capability routes.'
 } as const
-export const OPENAPI_TAGS = [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG, TRANSCRIPTION_TAG, OCR_TAG] as const
+export const LLM_TAG = {
+  name: 'LLM',
+  description: 'Protected shared local language model routes. Tokens need the llm scope.'
+} as const
+export const OPENAPI_TAGS = [SYSTEM_TAG, API_REFERENCE_TAG, OONA_CONTACT_TAG, FEEDS_TAG, TRANSCRIPTION_TAG, OCR_TAG, LLM_TAG] as const
 export const PROTECTED_BEARER_SECURITY = [{ [BEARER_SECURITY_SCHEME]: [] as string[] }]
 export const UNAUTHORIZED_ERROR_BODY = { error: 'unauthorized' } as const
+export const FORBIDDEN_ERROR_BODY = { error: 'forbidden' } as const
 
 export function createJsonContent<TSchema extends z.ZodTypeAny>(schema: TSchema, example: unknown) {
   return {
