@@ -300,6 +300,90 @@ def merge_occurrences(observed):
     return sorted(unique, key=lambda hit: min((box.y0, box.x0) for box in hit.boxes))
 
 
+INK = 150  # darkest RGB channel below this counts as ink
+
+
+def cover_ink(pixels, box, scale, word_height):
+    """Cover whole glyphs that touch a redaction box's left or right edge (OCR word boxes can stop short
+    of the last letters), chaining through letter-sized gaps up to one word height each way. Components
+    shaped like rule or form lines are ignored, so growth never follows a line into other words."""
+    rect = (box * scale).irect & pixels.irect
+    h = max(1, round(word_height))
+    if rect.is_empty:
+        return box
+    gap, reach = max(2, round(h * 0.06)), h
+    samples, stride, n = pixels.samples_mv, pixels.stride, pixels.n
+    top, bottom = max(0, rect.y0 - h // 3), min(pixels.height, rect.y1 + h // 3)
+
+    def dark(x, y):
+        offset = y * stride + x * n
+        return min(samples[offset:offset + 3]) < INK
+
+    def component(x, y, x_lo, x_hi):
+        seen, todo, box_ = {(x, y)}, [(x, y)], [x, y, x + 1, y + 1]
+        while todo:
+            cx, cy = todo.pop()
+            for nx in (cx - 1, cx, cx + 1):
+                for ny in (cy - 1, cy, cy + 1):
+                    if (nx, ny) not in seen and x_lo <= nx < x_hi and top <= ny < bottom and dark(nx, ny):
+                        seen.add((nx, ny)); todo.append((nx, ny))
+                        box_ = [min(box_[0], nx), min(box_[1], ny), max(box_[2], nx + 1), max(box_[3], ny + 1)]
+            if len(seen) > 4 * h * h:
+                return None  # too large to be a glyph
+        width, height = box_[2] - box_[0], box_[3] - box_[1]
+        if width > 1.2 * h or (width > h // 2 and height < h // 6):
+            return None  # a rule or form line, not a letter
+        return box_, seen
+
+    def extend(edge, step):
+        x_lo, x_hi = max(0, rect.x0 - reach), min(pixels.width, rect.x1 + reach)
+        done = set()
+        while True:
+            probe = range(edge + 1, min(x_hi, edge + 1 + gap)) if step > 0 else range(edge - 1, max(x_lo - 1, edge - 1 - gap), -1)
+            found = None
+            for x in probe:
+                for y in range(rect.y0, rect.y1):
+                    if (x, y) not in done and dark(x, y):
+                        found = component(x, y, x_lo, x_hi)
+                        if found is None:
+                            return edge  # touches a line or a blob: stop here, the verifier still checks
+                        break
+                if found:
+                    break
+            if not found:
+                return edge
+            (cx0, _, cx1, _), pixels_ = found
+            done |= pixels_
+            new_edge = cx1 - 1 if step > 0 else cx0
+            if (new_edge <= edge) if step > 0 else (new_edge >= edge):
+                return edge
+            edge = new_edge
+
+    x1 = extend(rect.x1 - 1, 1) + 1
+    x0 = extend(rect.x0, -1)
+    # A missed word ending is a letter or two; more growth means the chain reached a neighbouring word or mark.
+    limit = max(4, 0.15 * h)
+    if x1 - rect.x1 > limit:
+        x1 = rect.x1
+    if rect.x0 - x0 > limit:
+        x0 = rect.x0
+    # Grow only sideways, and only by the ink found: rounding the box out to whole pixels must not move its top or bottom.
+    return pdf.Rect(box.x0 - (rect.x0 - x0) / scale.a, box.y0, box.x1 + (x1 - rect.x1) / scale.a, box.y1)
+
+
+def clip_growth(grown, padded, raw, neighbours):
+    """Growth may not enter another word on the same line: the verifier needs that text to stay readable."""
+    x0, x1 = grown.x0, grown.x1
+    for other in neighbours:
+        if other.intersects(raw) or min(other.y1, raw.y1) - max(other.y0, raw.y0) < 0.5 * raw.height:
+            continue
+        if other.x0 >= raw.x1 - 0.5:
+            x1 = min(x1, max(padded.x1, other.x0))
+        elif other.x1 <= raw.x0 + 0.5:
+            x0 = max(x0, min(padded.x0, other.x1))
+    return pdf.Rect(x0, grown.y0, x1, grown.y1)
+
+
 def plan_placeholders(page, pixels, exact, structured, identities, values, counters, ocr_lines, names, phones,
                       safe=(), locate_lines=()):
     observed = list(detected_occurrences(text_boxes(page), exact, structured, names, phones))
@@ -307,6 +391,9 @@ def plan_placeholders(page, pixels, exact, structured, identities, values, count
     # Locate listed and learned terms in a second transcription; detectors still run on the first two.
     observed.extend(detected_occurrences(locate_lines, exact, False, None, None))
     observed = [hit for hit in observed if not declared_safe(hit, safe)]
+    declared = {token for anchor in safe for token in anchor}
+    neighbours = [box for lines in (text_boxes(page), ocr_lines, locate_lines) for line in lines for word, box in line
+                  if declared.intersection(tokens(word))]
     boxes = []
     placements = []
     painted = []
@@ -319,7 +406,9 @@ def plan_placeholders(page, pixels, exact, structured, identities, values, count
             identities[hit.identity] = label
             values[label] = hit.value
         label = identities[hit.identity]
-        fragments = [(box + (-2, -2, 2, 2)) & page.rect for box in hit.boxes]
+        fragments = [clip_growth(cover_ink(pixels, (box + (-2, -2, 2, 2)) & page.rect, scale, box.height * scale.d),
+                                 (box + (-2, -2, 2, 2)) & page.rect, box, neighbours) & page.rect
+                     for box in hit.boxes]
         boxes.extend(fragments)
         # Padded boxes of neighbouring identifiers can touch; only paint what is still uncovered.
         pieces = []

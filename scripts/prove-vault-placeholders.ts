@@ -150,6 +150,26 @@ else:
     raise AssertionError("without the verified label region the misread must still fail")
 `
 
+const inkCover = `
+import sys
+sys.path.insert(0, sys.argv[1])
+import exact_match_pdf as w, pymupdf as pdf
+pixels = pdf.Pixmap(pdf.csRGB, pdf.IRect(0, 0, 400, 100), False)
+pixels.clear_with(255)
+for x0, x1 in ((100, 160), (161, 164), (184, 240)):  # a word, its last letter just past the box edge (growth is capped near a letter), the next word after a gap
+    pixels.set_rect(pdf.IRect(x0, 40, x1, 60), (0, 0, 0))
+scale = pdf.Matrix(1, 1)
+grown = w.cover_ink(pixels, pdf.Rect(100, 40, 160, 60), scale, 20)
+assert 164 <= grown.x1 < 184 and grown.y0 == 40 and grown.y1 == 60, grown
+alone = pdf.Rect(300, 40, 340, 60)
+assert w.cover_ink(pixels, alone, scale, 20) == alone
+far = pdf.Rect(100, 40, 160, 60)
+pixels.set_rect(pdf.IRect(164, 40, 190, 60), (0, 0, 0))  # ink running on past the cap is a neighbouring word, not a last letter
+assert w.cover_ink(pixels, far, scale, 20) == far
+after_space = pdf.Rect(184, 40, 240, 60)  # the next word: the 9 px space to its left is never bridged
+assert w.cover_ink(pixels, after_space, scale, 20) == after_space
+`
+
 async function run(...args: string[]) {
   const child = Bun.spawn([python, ...args], {
     stdout: 'ignore', stderr: 'pipe', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }
@@ -306,7 +326,10 @@ try {
   assert.deepEqual(await readdir(vault), [second.candidateSha256])
   const labelRows = await run('-c', placeholderRows, dirname(worker))
   assert.equal(labelRows.status, 0, labelRows.stderr)
-  console.log(`PASS stable repeated/wrapped labels across text and scan, OCR inside verified labels read as the label, approved local Work handoff and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
+  const ink = await run('-c', inkCover, dirname(worker))
+  assert.equal(ink.status, 0, ink.stderr)
+  assert.equal(labelRows.status, 0, labelRows.stderr)
+  console.log(`PASS stable repeated/wrapped labels across text and scan, OCR inside verified labels read as the label, boxes cover trailing ink, approved local Work handoff and retained Vault mapping; ${((performance.now() - started) / 1000).toFixed(2)} s`)
 } finally {
   await rm(root, { recursive: true, force: true })
 }
