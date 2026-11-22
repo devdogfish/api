@@ -11,7 +11,7 @@ test "$(hostname -s)" = girke-api
 
 apt-get update -q
 apt-get install -y -q --no-install-recommends ca-certificates curl git gnupg nftables \
-  docker.io docker-compose docker-buildx unattended-upgrades
+  docker.io docker-cli docker-compose docker-buildx unattended-upgrades
 
 install -d -m 0755 /usr/share/keyrings
 curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg
