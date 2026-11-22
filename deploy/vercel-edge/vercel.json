@@ -3,6 +3,9 @@
   "framework": null,
   "rewrites": [
     { "source": "/", "destination": "https://gate.tail555ca5.ts.net:10000/" },
+    { "source": "/boards/", "destination": "https://gate.tail555ca5.ts.net:10000/boards/" },
+    { "source": "/files/", "destination": "https://gate.tail555ca5.ts.net:10000/files/" },
+    { "source": "/youtube-strategy-files/", "destination": "https://gate.tail555ca5.ts.net:10000/youtube-strategy-files/" },
     { "source": "/:path*", "destination": "https://gate.tail555ca5.ts.net:10000/:path*" }
   ]
 }
