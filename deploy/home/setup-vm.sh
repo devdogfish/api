@@ -1,9 +1,9 @@
 #!/bin/bash
 # One-time setup inside vm api (Atlas VM 3500), run as root via `qm guest exec`.
-# Installs Docker, Tailscale and the pull deployer. Reads the Tailscale auth key
-# from stdin so it never appears in argv or logs. Idempotent apart from `tailscale up`.
+# Installs Docker, Tailscale and the pull deployer. Idempotent. The first run
+# exits 3 with TAILSCALE_LOGIN_URL; approve it, then run again.
 #
-#   qm guest exec 3500 --pass-stdin 1 -- bash /root/setup-vm.sh < authkey
+#   qm guest exec 3500 -- bash /root/girke-setup/setup-vm.sh
 set -euo pipefail
 umask 022
 export DEBIAN_FRONTEND=noninteractive
@@ -38,11 +38,13 @@ table inet girke_guest {
 NFT
 systemctl enable --now nftables
 
-if ! tailscale status >/dev/null 2>&1; then
-  key=$(cat)
-  [ -n "$key" ] || { echo "Tailscale auth key on stdin required" >&2; exit 1; }
-  tailscale up --auth-key="$key" --hostname=girke-api --advertise-tags=tag:girke-api --ssh=false
-  unset key
+# Join the tailnet. No auth key: `tailscale up` prints a login URL that the Owner
+# approves once in the admin console. Rerun this script after approval.
+if [ "$(tailscale status --json | sed -n 's/^  "BackendState": "\(.*\)",$/\1/p')" != Running ]; then
+  tailscale up --hostname=girke-api --advertise-tags=tag:girke-api --ssh=false --timeout=20s >/dev/null 2>&1 || true
+  url=$(tailscale status --json | sed -n 's/^  "AuthURL": "\(.*\)",$/\1/p')
+  echo "TAILSCALE_LOGIN_URL=$url"
+  exit 3
 fi
 tailscale serve --bg --tcp=8080 tcp://127.0.0.1:8080
 
