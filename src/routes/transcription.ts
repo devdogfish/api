@@ -1462,7 +1462,7 @@ const transcriptionJobQueuedStatusSchema = transcriptionJobStatusCommonSchema
 const transcriptionJobProcessingStatusSchema = transcriptionJobStatusCommonSchema
   .extend({
     status: z.literal('processing').openapi({ example: transcriptionJobProcessingExample.status, description: 'Transcription Job actively processing uploaded media.' }),
-    current_chunk: z.number().int().nonnegative().openapi({ example: transcriptionJobProcessingExample.current_chunk, description: 'Current zero-based chunk index while processing.' }),
+    current_chunk: z.number().int().nonnegative().optional().openapi({ example: transcriptionJobProcessingExample.current_chunk, description: 'Current zero-based chunk index while processing. Absent while uploaded media is still being normalized and split into chunks.' }),
     total_chunks: z.number().int().positive().optional().openapi({ example: transcriptionJobProcessingExample.total_chunks, description: 'Total number of normalized chunks for the job when chunk metadata is available.' }),
     duration_seconds: z.number().nonnegative().optional().openapi({ example: transcriptionJobProcessingExample.duration_seconds, description: 'Media duration in seconds when known during processing.' }),
     processing_seconds_elapsed: z.number().nonnegative().openapi({

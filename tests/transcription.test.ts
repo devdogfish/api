@@ -821,6 +821,72 @@ describe('transcription capability', () => {
     }
   })
 
+  test('async job status answers while media is still being prepared, before any chunk exists', async () => {
+    const uploadDir = await makeUploadDir()
+    const inner = chunkedMediaProcessor(uploadDir, 60, [{ startSeconds: 0, endSeconds: 60 }])
+    let releasePrepare!: () => void
+    let resolvePrepareStarted!: () => void
+    const prepareStarted = new Promise<void>((resolve) => {
+      resolvePrepareStarted = resolve
+    })
+    const mediaProcessor: TranscriptionMediaProcessor = {
+      async prepare(inputPath, attemptDir) {
+        resolvePrepareStarted()
+        await new Promise<void>((resolve) => {
+          releasePrepare = resolve
+        })
+        return inner.prepare(inputPath, attemptDir)
+      }
+    }
+    const whisperFetch: TranscriptionFetch = async () =>
+      Response.json({
+        text: 'only chunk',
+        segments: [{ start: 0, end: 2, text: 'only chunk' }],
+        duration_seconds: 60,
+        processing_seconds: 1,
+        level: 'medium',
+        language: 'auto',
+        detected_language: 'en',
+        model: 'mock'
+      })
+    const app = createApp({
+      apiTokenStore: testApiTokenStore(),
+      version: 'test-version',
+      whisperFetch,
+      transcriptionUploadDir: uploadDir,
+      transcriptionMediaProcessor: mediaProcessor
+    })
+
+    try {
+      const created = await app.request('/api/v1/transcription/jobs', {
+        method: 'POST',
+        headers: authHeaders,
+        body: makeForm()
+      })
+      const createdBody = await created.json()
+      await prepareStarted
+
+      const status = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, { headers: authHeaders })
+      expect(status.status).toBe(200)
+      const body = await status.json()
+      expect(body).toMatchObject({ status: 'processing', progress: 0 })
+      expect(body).not.toHaveProperty('current_chunk')
+
+      releasePrepare()
+      const completed = await waitFor(
+        async () => {
+          const res = await app.request(`/api/v1/transcription/jobs/${createdBody.job_id}`, { headers: authHeaders })
+          return res.json()
+        },
+        (value: any) => value.status === 'completed'
+      )
+      expect(completed.status).toBe('completed')
+    } finally {
+      releasePrepare?.()
+      await rm(uploadDir, { recursive: true, force: true })
+    }
+  })
+
   test('async jobs fail with retry-exhausted after a chunk fails three times', async () => {
     const uploadDir = await makeUploadDir()
     const mediaProcessor = chunkedMediaProcessor(uploadDir, 120, [
