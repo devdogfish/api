@@ -4,8 +4,9 @@ Permanent service for `api.girke.dev`, separate from the LLM Wiki app/API. The o
 
 ## Layout
 
-- Host: Hostinger VPS (`ssh hostinger-vps`)
-- Repo: `/root/api`
+- Host: Atlas VM 3500 `girke-api` (quantself ADR 0045, "Girke API on Atlas"); see `deploy/README.md`
+- Public path: `api.girke.dev` (Vercel `girke-api-edge`) -> Gate Funnel :10000 -> tailnet -> VM
+- Release root in the VM: `/srv/girke-api` (`.env`, `releases/`, `state/`, `boards/`)
 - API: Hono/TypeScript in `src/`
 - Postgres: Docker Compose service `girke-api-postgres`
 - Whisper sidecar: FastAPI service `girke-api-whisper`
@@ -31,10 +32,12 @@ docker compose -f docker-compose.yml -f docker-compose.hostinger.yml run --build
 ```
 
 Database migrations are generated in `drizzle/`. Token values are printed once
-and stored as hashes. Pushing `main` triggers an API and Whisper release to
-Hostinger. The workflow stages the triggering revision separately, uses the
-existing healthy PostgreSQL service, and verifies the API and rollback fence.
-The shared Caddy and Boards services have their own maintenance window.
+and stored as hashes. The VM fetches `main` every minute and releases new commits
+itself (`deploy/home/girke-deploy`), rolling back to the previous release if
+`/health` or `/version` fails. The `Deploy` workflow only waits until
+`https://api.girke.dev/version` reports the pushed commit. In the VM, run
+`girke-deploy status`; create tokens with
+`docker exec girke-api bun run tokens:create <name>`.
 
 ## Private redaction proof
 
@@ -232,8 +235,9 @@ the offline Linux memory and CPU budget.
 
 ## Public routing
 
-Hostinger's Caddy routes `api.girke.dev` to `girke-api:3000` over the shared
-external Docker network `girke-edge`. The legacy Quantself dashboard on
+`api.girke.dev` resolves to Vercel (`76.76.21.21`), which rewrites to Gate's
+Funnel; a loopback Caddy in the VM serves the Boards files and proxies the API.
+Uploads through Vercel are reliable up to about 12 MB. The legacy Quantself dashboard on
 `dashboard.girke.dev` is fenced for rollback and returns HTTP 503 at `/` and
 `/api/health`. Quantself dashboard traffic moved to Keep in the
 [home cutover](https://github.com/devdogfish/quantself/issues/209).

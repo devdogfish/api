@@ -1,0 +1,22 @@
+# Gate: Funnel :10000 -> this loopback listener -> vm api over the tailnet.
+# Public api.girke.dev traffic arrives from Vercel's external rewrite.
+{
+	admin off
+	auto_https off
+}
+
+http://:8803 {
+	bind 127.0.0.1
+	request_body {
+		max_size 2GiB
+	}
+	reverse_proxy http://{$GIRKE_API_TAILNET_HOST}:8080 {
+		header_up -Tailscale-User-Login
+		header_up -Tailscale-User-Name
+		header_up -Tailscale-User-Profile-Pic
+		header_up -Tailscale-Headers-Info
+		transport http {
+			response_header_timeout 15m
+		}
+	}
+}

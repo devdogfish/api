@@ -1,5 +1,10 @@
 name: Deploy
 
+# api.girke.dev runs on Atlas VM 3500 (quantself ADR 0045, "Girke API on Atlas").
+# The VM pulls main every minute and deploys it itself (deploy/home/girke-deploy);
+# nothing pushes into the home network. This workflow only waits until production
+# reports this commit, or a newer main commit that contains it, at /version.
+
 on:
   push:
     branches:
@@ -10,105 +15,48 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-deploy
+  group: production-verify-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy to VPS
+  verify:
+    name: Verify home deployment
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     env:
-      DEPLOY_PATH: /root/api
-      PRODUCTION_DASHBOARD_URL: https://dashboard.girke.dev
-      PRODUCTION_HEALTH_URL: https://api.girke.dev/health
-      PRODUCTION_OPENAPI_URL: https://api.girke.dev/openapi.json
-      PRODUCTION_REFERENCE_URL: https://api.girke.dev/reference
-      PRODUCTION_VERSION_URL: https://api.girke.dev/version
-      REPOSITORY_URL: https://github.com/devdogfish/api.git
+      BASE_URL: https://api.girke.dev
       RELEASE_SHA: ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
 
     steps:
-      - name: Configure SSH
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' '72.60.27.33 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL5LxaEZRNiTrRJNdNSBJ8bcLa3YVHSGtU7AxYvYMEFo' >> ~/.ssh/known_hosts
-
-      - name: Deploy API and Whisper
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
+      - name: Wait for production to report this commit
         run: |
           set -euo pipefail
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" "DEPLOY_PATH='$DEPLOY_PATH' REPOSITORY_URL='$REPOSITORY_URL' RELEASE_SHA='$RELEASE_SHA' bash -se" <<'REMOTE'
-          set -euo pipefail
-          cd "$DEPLOY_PATH"
-          gh auth setup-git -h github.com
-          git config --global --unset-all url.git@github.com:.insteadOf || true
-          git config --global --unset-all url.ssh://git@github.com/.insteadOf || true
-          git config --local --unset-all url.git@github.com:.insteadOf || true
-          git config --local --unset-all url.ssh://git@github.com/.insteadOf || true
-          git remote set-url origin "$REPOSITORY_URL"
-          git fetch --prune origin main
-          if [[ "$(git rev-parse FETCH_HEAD)" != "$RELEASE_SHA" ]]; then
-            echo 'Main changed after this deployment was queued.' >&2
-            exit 1
-          fi
-
-          project_label='{{ index .Config.Labels "com.docker.compose.project" }}'
-          project=$(docker inspect --format "$project_label" girke-api)
-          if [[ ! "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
-            echo 'Girke API has no valid existing Compose project.' >&2
-            exit 1
-          fi
-          for container in girke-api-whisper girke-api-postgres; do
-            if [[ "$(docker inspect --format "$project_label" "$container")" != "$project" ]]; then
-              echo "Unexpected Compose project for $container." >&2
-              exit 1
+          deadline=$((SECONDS + 40 * 60))
+          while (( SECONDS < deadline )); do
+            live=$(curl -fsS --max-time 10 "$BASE_URL/version" | jq -r .version || true)
+            if [[ "$live" == "$RELEASE_SHA" ]]; then
+              echo "Production runs $RELEASE_SHA."; break
             fi
+            if [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
+              status=$(gh api "repos/$REPO/compare/$RELEASE_SHA...$live" --jq .status 2>/dev/null || true)
+              if [[ "$status" == ahead ]]; then
+                echo "Production runs $live, a newer main commit that contains $RELEASE_SHA."; break
+              fi
+            fi
+            echo "Production reports ${live:-nothing}; waiting."
+            sleep 30
           done
-          if [[ "$(docker inspect --format '{{.State.Health.Status}}' girke-api-postgres)" != healthy ]]; then
-            echo 'Girke PostgreSQL must already be healthy.' >&2
-            exit 1
-          fi
+          (( SECONDS < deadline )) || { echo "Production never reported $RELEASE_SHA." >&2; exit 1; }
 
-          # The live shared Caddyfile is bind-mounted from DEPLOY_PATH.
-          # Stage the API release separately so its rollback fence stays in place.
-          release_dir=$(mktemp -d)
-          trap 'rm -r -- "$release_dir"' EXIT
-          git archive "$RELEASE_SHA" | tar -xf - -C "$release_dir"
-          ln -s "$DEPLOY_PATH/.env" "$release_dir/.env"
-          cd "$release_dir"
-          compose=(docker compose --project-name "$project" -f docker-compose.yml -f docker-compose.hostinger.yml)
-          "${compose[@]}" config --quiet
-          "${compose[@]}" build girke-api whisper
-          "${compose[@]}" run --rm --no-deps -T girke-api bun run db:migrate < /dev/null
-          "${compose[@]}" up -d --no-deps --force-recreate whisper
-          "${compose[@]}" up -d --no-deps --force-recreate girke-api
-          printf 'deployed_commit=%s\n' "$RELEASE_SHA"
-          REMOTE
-
-      - name: Verify production
+      - name: Verify public routes
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_HEALTH_URL" | grep '"ok":true'
-          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_VERSION_URL" >/dev/null
-          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_OPENAPI_URL" | grep '"openapi":"3.1.0"'
-          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 "$PRODUCTION_REFERENCE_URL" | grep '/openapi.json'
-          fence_body=$(mktemp)
-          trap 'rm "$fence_body"' EXIT
-          for path in / /api/health; do
-            status=$(curl --silent --show-error --max-time 10 --output "$fence_body" --write-out '%{http_code}' "${PRODUCTION_DASHBOARD_URL%/}$path")
-            if [[ "$status" != 503 ]] || [[ "$(cat "$fence_body")" != 'Quantself migration in progress. Try again shortly.' ]]; then
-              printf 'Expected the legacy dashboard rollback fence at %s, got HTTP %s.\n' "$path" "$status" >&2
-              exit 1
-            fi
-          done
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 "$BASE_URL/health" | grep '"ok":true'
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 "$BASE_URL/openapi.json" | grep '"openapi":"3.1.0"'
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 "$BASE_URL/reference" | grep '/openapi.json'
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$BASE_URL/api/v1/ocr")
+          [[ "$status" == 401 ]] || { echo "Expected 401 without a token, got $status." >&2; exit 1; }

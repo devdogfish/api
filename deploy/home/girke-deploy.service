@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy the newest Girke API commit on main
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/girke-deploy
+TimeoutStartSec=45min
+Nice=10

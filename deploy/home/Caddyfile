@@ -1,0 +1,35 @@
+# vm api edge. TLS ends at Vercel and Tailscale Funnel; this listener is plain HTTP
+# on loopback, published to the tailnet with `tailscale serve`.
+{
+	admin off
+	auto_https off
+}
+
+http://:8080 {
+	encode zstd gzip
+
+	@boards path /youtube-strategy-files/* /files/* /boards/*
+	header @boards Access-Control-Allow-Origin "*"
+	header @boards Access-Control-Allow-Methods "GET, OPTIONS"
+	header @boards Access-Control-Allow-Headers "*"
+
+	handle_path /youtube-strategy-files/* {
+		root * /srv/boards
+		file_server
+	}
+	handle_path /files/* {
+		root * /srv/boards
+		file_server
+	}
+	handle_path /boards/* {
+		root * /srv/boards
+		file_server
+	}
+
+	handle {
+		reverse_proxy girke-api:3000 {
+			# Vercel must not cache API answers.
+			header_down Cache-Control "no-store"
+		}
+	}
+}
