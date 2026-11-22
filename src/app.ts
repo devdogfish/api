@@ -22,6 +22,9 @@ import {
   type SmtpConfig
 } from './routes/oonaContact'
 import { ocrRoutes } from './routes/ocr'
+import { LLM_BASE_PATH, llmRoutes } from './routes/llm'
+import type { LlmClient } from './llm/llmClient'
+import type { LlmRateLimiter } from './llm/rateLimit'
 import type { OcrProcessor } from './ocr/ocrProcessor'
 import { TRANSCRIPTION_BASE_PATH } from './routes/transcriptionContract'
 import { registerSystemRoutes } from './routes/system'
@@ -49,6 +52,9 @@ export type AppConfig = {
   ocrProcessor?: OcrProcessor
   ocrMaxUploadBytes?: number
   ocrTimeoutMs?: number
+  llmClient?: LlmClient
+  llmAdmission?: ComputeAdmission
+  llmRateLimiter?: LlmRateLimiter
   sender?: SenderConfig
   senderFetch?: SenderFetch
   smtp?: SmtpConfig
@@ -107,6 +113,7 @@ export function createApp(config: AppConfig, admission = new ComputeAdmission())
       timeoutMs: config.ocrTimeoutMs
     })
   )
+  app.route(LLM_BASE_PATH, llmRoutes({ client: config.llmClient, admission: config.llmAdmission, limiter: config.llmRateLimiter }))
   app.route('/api/v1/feeds', feedRoutes())
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404))

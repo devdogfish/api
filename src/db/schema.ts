@@ -4,6 +4,7 @@ export const apiTokens = pgTable('api_tokens', {
   id: serial('id').primaryKey(),
   name: text('name').notNull(),
   tokenHash: text('token_hash').notNull().unique(),
+  scopes: text('scopes').array().notNull().default([]),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   revokedAt: timestamp('revoked_at')
 })

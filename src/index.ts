@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server'
 import { createApp } from './app'
 import { createPostgresApiTokenStore } from './auth/postgresTokenStore'
 import { db } from './db/client'
+import { createLlamaServerClient } from './llm/llmClient'
 import { createPostgresTranscriptionJobStore } from './transcription/postgresJobStore'
 
 const port = Number(process.env.PORT ?? '3000')
@@ -58,6 +59,7 @@ const app = createApp({
   transcriptionWebhookSecret: process.env.TRANSCRIPTION_WEBHOOK_SECRET,
   transcriptionWebhookMaxAttempts: optionalNumber('TRANSCRIPTION_WEBHOOK_MAX_ATTEMPTS'),
   transcriptionWebhookRetryBaseDelayMs: optionalNumber('TRANSCRIPTION_WEBHOOK_RETRY_BASE_DELAY_MS'),
+  llmClient: process.env.LLM_URL ? createLlamaServerClient({ baseUrl: process.env.LLM_URL, apiKey: process.env.LLM_API_KEY }) : undefined,
   sender: senderConfig,
   smtp: smtpConfig
 })

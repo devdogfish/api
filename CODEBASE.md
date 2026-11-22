@@ -23,6 +23,8 @@ Protected endpoints use `bearerAuth`: `Authorization: Bearer <API Token>`.
 - `GET /api/v1/feeds`: protected feed capability list for authenticated API clients.
 - `GET /api/v1/ocr`: protected OCR metadata, including model, timeout, and accepted image formats.
 - `POST /api/v1/ocr`: protected image OCR upload; returns recognized text and line-level results.
+- `GET /api/v1/llm`: protected shared model metadata and limits (`llm` token scope).
+- `POST /api/v1/llm/chat`: protected chat completion with optional `json_schema` or `grammar`; own queue; prompts never logged.
 - `GET /api/v1/transcription`: protected transcription metadata, including levels, language hints, and media formats.
 - `POST /api/v1/transcription/transcribe`: protected synchronous media transcription for shorter audio or video files.
 - `GET /api/v1/transcription/jobs`: protected async transcription job list for the current token.

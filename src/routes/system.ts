@@ -73,6 +73,8 @@ const openApiDocumentExamplePaths = createOpenApiDocumentExampleSection([
   '/api/v1/feeds',
   '/api/v1/oona/contact',
   '/api/v1/ocr',
+  '/api/v1/llm',
+  '/api/v1/llm/chat',
   TRANSCRIPTION_BASE_PATH,
   TRANSCRIPTION_JOBS_PATH,
   `${TRANSCRIPTION_JOBS_PATH}/{job_id}`,
